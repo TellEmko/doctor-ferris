@@ -1,0 +1,11 @@
+[package]
+name = "doctor-ferris-payload"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_SystemServices", "Win32_Foundation"] }

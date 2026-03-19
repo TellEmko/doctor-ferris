@@ -1,0 +1,56 @@
+[package]
+name = "doctor-ferris"
+version = "0.1.0"
+edition = "2021"
+authors = ["emko"]
+description = "High-performance, modular dynamic library injection across Windows, Linux, and macOS"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/TellEmko/doctor-ferris"
+keywords = ["injection", "dll", "dynamic-library", "security", "systems"]
+categories = ["os", "development-tools"]
+
+[features]
+default = []
+cli = ["dep:clap", "dep:env_logger"]
+stealth = []
+
+[dependencies]
+log = "0.4"
+thiserror = "2"
+bitflags = "2"
+
+# CLI dependencies (optional)
+clap = { version = "4", features = ["derive"], optional = true }
+env_logger = { version = "0.11", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    "Win32_System_ProcessStatus",
+    "Win32_Security",
+    "Win32_UI_Shell",
+    "Win32_System_SystemInformation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Kernel",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+nix = { version = "0.29", features = ["process", "ptrace", "signal"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+mach2 = "0.4"
+
+[dev-dependencies]
+
+[[bin]]
+name = "doctor-ferris"
+path = "src/main.rs"
+required-features = ["cli"]
