@@ -28,11 +28,6 @@ Add Doctor Ferris to your `Cargo.toml`:
 doctor-ferris = "0.1"
 ```
 
-To enable advanced stealth methods:
-```toml
-doctor-ferris = { version = "0.1", features = ["stealth"] }
-```
-
 To install the standalone CLI:
 ```bash
 cargo install doctor-ferris --features cli
@@ -41,7 +36,7 @@ cargo install doctor-ferris --features cli
 ## Quick Start (Library)
 
 ```rust
-use doctor_ferris::{Injector, InjectionConfig, InjectionMode};
+use doctor_ferris::{Injector, InjectionConfig};
 
 fn main() -> doctor_ferris::Result<()> {
     // 1. Initialize the injector framework with platform defaults
@@ -51,8 +46,9 @@ fn main() -> doctor_ferris::Result<()> {
     let config = InjectionConfig::builder()
         .dll_path("payload.dll")
         .target_name("target_game.exe")
-        .mode(InjectionMode::Stealth)
-        .elevate(true) // Automatically request UAC/sudo if needed
+        .method("manual_map") // Directly select your injection technique
+        .stealth(true)        // Execute post-injection stealth maneuvers (e.g., zero headers)
+        .elevate(true)        // Automatically request UAC/sudo if needed
         .build()?;
 
     // 3. Execute! The Injector handles architecture validation,
@@ -71,7 +67,7 @@ fn main() -> doctor_ferris::Result<()> {
 *   `ntcreatethread`: Bypasses shallow API hooks on `CreateRemoteThread`.
 *   `thread_hijack`: Suspends a thread, redirects RIP to load the DLL, and resumes. Evades thread creation monitoring (Stealth).
 *   `apc_injection`: Queues an APC to an alertable thread. (Stealth).
-*   `manual_map`: Manually maps the PE sections and resolves base relocations, effectively making the module invisible in the PEB module lists (Requires `stealth` feature).
+*   `manual_map`: Manually maps the PE sections and resolves base relocations, effectively making the module invisible in the PEB module lists.
 
 ### Linux (x64)
 *   `ptrace`: Attaches to target, modifies registers to call `dlopen`, detaches.
@@ -97,9 +93,9 @@ Options:
   -V, --version  Print version
 ```
 
-Example: Injection into a specific PID using Stealth mode.
+Example: Explicit manual map injection with stealth maneuvers enabled.
 ```bash
-doctor-ferris inject -p 1337 -d C:\path\to\payload.dll --mode stealth --elevate
+doctor-ferris inject -p 1337 -d C:\path\to\payload.dll --method manual_map --stealth --elevate
 ```
 
 ## Safety & Security

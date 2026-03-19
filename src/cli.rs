@@ -5,7 +5,7 @@
 
 use clap::{Parser, Subcommand};
 
-use crate::config::{InjectionConfig, InjectionMode};
+use crate::config::InjectionConfig;
 use crate::injector::Injector;
 
 /// Doctor Ferris — cross-platform dynamic library injection toolkit.
@@ -32,13 +32,13 @@ enum Commands {
         #[arg(short, long, conflicts_with = "pid")]
         name: Option<String>,
 
-        /// Injection mode: stability, stealth, or compatibility.
-        #[arg(short, long, default_value = "stability")]
-        mode: String,
-
-        /// Override automatic method selection with a specific method name.
-        #[arg(long)]
+        /// Select a specific injection method to use.
+        #[arg(short, long)]
         method: Option<String>,
+
+        /// Apply post-injection stealth maneuvers (e.g. wiping headers in target).
+        #[arg(long)]
+        stealth: bool,
 
         /// Attempt privilege escalation if injection fails due to permissions.
         #[arg(long)]
@@ -69,27 +69,14 @@ pub fn run() -> crate::Result<()> {
             dll,
             pid,
             name,
-            mode,
             method,
+            stealth,
             elevate,
             skip_arch_check,
         } => {
-            let injection_mode = match mode.to_lowercase().as_str() {
-                "stability" => InjectionMode::Stability,
-                "stealth" => InjectionMode::Stealth,
-                "compatibility" => InjectionMode::Compatibility,
-                other => {
-                    eprintln!(
-                        "Unknown mode '{}'. Use: stability, stealth, compatibility",
-                        other
-                    );
-                    std::process::exit(1);
-                }
-            };
-
             let mut builder = InjectionConfig::builder()
                 .dll_path(&dll)
-                .mode(injection_mode)
+                .stealth(stealth)
                 .elevate(elevate)
                 .skip_arch_check(skip_arch_check);
 

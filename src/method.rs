@@ -4,7 +4,7 @@
 //! [`InjectionMethod`] trait. The [`MethodRegistry`] collects them and provides
 //! selection logic based on platform, architecture, and injection mode.
 
-use crate::config::{InjectionConfig, InjectionMode};
+use crate::config::InjectionConfig;
 use crate::error::{DoctorError, Result};
 use crate::types::{Architecture, InjectionResult, Platform, ProcessInfo};
 
@@ -109,16 +109,9 @@ impl MethodRegistry {
         &self.methods
     }
 
-    /// Automatically select the best method for the given mode, platform, and
-    /// architecture.
-    ///
-    /// Selection priority depends on the mode:
-    /// - **Stability**: highest [`InjectionMethod::reliability`] score.
-    /// - **Stealth**: only stealth methods, ranked by reliability.
-    /// - **Compatibility**: highest [`InjectionMethod::compatibility`] score.
-    pub fn select(
+    /// Automatically select a reliable default method for the given platform and architecture.
+    pub fn get_default(
         &self,
-        mode: InjectionMode,
         platform: Platform,
         arch: Architecture,
     ) -> Result<&dyn InjectionMethod> {
@@ -140,36 +133,20 @@ impl MethodRegistry {
             )));
         }
 
-        let selected = match mode {
-            InjectionMode::Stability => candidates
-                .iter()
-                .max_by_key(|m| m.reliability())
-                .copied(),
-            InjectionMode::Stealth => {
-                let stealth: Vec<_> = candidates.iter().filter(|m| m.is_stealth()).collect();
-                if stealth.is_empty() {
-                    // Fall back to highest-reliability non-stealth method.
-                    candidates
-                        .iter()
-                        .max_by_key(|m| m.reliability())
-                        .copied()
-                } else {
-                    stealth
-                        .iter()
-                        .max_by_key(|m| m.reliability())
-                        .copied()
-                        .copied()
-                }
+        // Return standard built-in defaults if available
+        for method_name in &["loadlibrary", "ptrace", "task_inject"] {
+            if let Some(m) = candidates.iter().find(|c| c.name() == *method_name) {
+                return Ok(*m);
             }
-            InjectionMode::Compatibility => candidates
-                .iter()
-                .max_by_key(|m| m.compatibility())
-                .copied(),
-        };
+        }
 
-        selected.ok_or_else(|| {
-            DoctorError::MethodNotFound(format!("no suitable method for mode '{}'", mode))
-        })
+        // Fallback to highest compatibility
+        let selected = candidates
+            .into_iter()
+            .max_by_key(|m| m.compatibility())
+            .unwrap();
+
+        Ok(selected)
     }
 
     /// Register all built-in methods for the current compilation target.

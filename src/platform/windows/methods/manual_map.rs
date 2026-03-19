@@ -68,10 +68,15 @@ impl InjectionMethod for ManualMapMethod {
         );
 
         // Read the entire DLL into memory.
-        let pe_data = read_pe_file(&config.dll_path)?;
+        let mut pe_data = read_pe_file(&config.dll_path)?;
 
         // Parse PE headers.
         let pe = PeHeaders::parse(&pe_data)?;
+
+        // Resolve imports locally assuming system DLLs share the same ASLR base across all processes.
+        unsafe {
+            resolve_imports_locally(&pe, &mut pe_data)?;
+        }
 
         let process = super::super::open_process_for_injection(target.pid)?;
 
@@ -292,6 +297,115 @@ impl PeHeaders {
 
 // ── Manual mapping helpers ───────────────────────────────────────────
 
+unsafe fn resolve_imports_locally(pe: &PeHeaders, pe_data: &mut [u8]) -> Result<()> {
+    if pe.import_directory_rva == 0 || pe.import_directory_size == 0 {
+        return Ok(());
+    }
+
+    let import_offset = rva_to_file_offset(pe, pe.import_directory_rva)
+        .ok_or_else(|| DoctorError::injection_failed("cannot resolve import directory RVA"))?;
+
+    let mut dir_pos = import_offset;
+
+    loop {
+        if dir_pos + 20 > pe_data.len() {
+            break;
+        }
+
+        let original_first_thunk =
+            u32::from_le_bytes(pe_data[dir_pos..dir_pos + 4].try_into().unwrap());
+        let name_rva = u32::from_le_bytes(pe_data[dir_pos + 12..dir_pos + 16].try_into().unwrap());
+        let first_thunk =
+            u32::from_le_bytes(pe_data[dir_pos + 16..dir_pos + 20].try_into().unwrap());
+
+        if name_rva == 0 {
+            break;
+        }
+
+        let name_offset = rva_to_file_offset(pe, name_rva)
+            .ok_or_else(|| DoctorError::injection_failed("cannot resolve import name RVA"))?;
+
+        let mut name_end = name_offset;
+        while name_end < pe_data.len() && pe_data[name_end] != 0 {
+            name_end += 1;
+        }
+
+        let mut dll_name_bytes = pe_data[name_offset..name_end].to_vec();
+        dll_name_bytes.push(0);
+
+        let h_module =
+            windows_sys::Win32::System::LibraryLoader::LoadLibraryA(dll_name_bytes.as_ptr());
+        if h_module.is_null() {
+            log::warn!("Failed to load dependency DLL locally (some imports may fail to resolve)");
+        }
+
+        let thunk_rva = if original_first_thunk != 0 {
+            original_first_thunk
+        } else {
+            first_thunk
+        };
+        let mut thunk_offset = rva_to_file_offset(pe, thunk_rva)
+            .ok_or_else(|| DoctorError::injection_failed("cannot resolve INT RVA"))?;
+        let mut iat_offset = rva_to_file_offset(pe, first_thunk)
+            .ok_or_else(|| DoctorError::injection_failed("cannot resolve IAT RVA"))?;
+
+        loop {
+            if thunk_offset + 8 > pe_data.len() || iat_offset + 8 > pe_data.len() {
+                break;
+            }
+
+            let thunk_val =
+                u64::from_le_bytes(pe_data[thunk_offset..thunk_offset + 8].try_into().unwrap());
+            if thunk_val == 0 {
+                break;
+            }
+
+            let mut resolved_addr: u64 = 0;
+
+            if !h_module.is_null() {
+                if (thunk_val & (1 << 63)) != 0 {
+                    // Ordinal
+                    let ordinal = (thunk_val & 0xFFFF) as usize;
+                    resolved_addr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                        h_module,
+                        ordinal as *const u8,
+                    )
+                    .map_or(0, |f| f as u64);
+                } else {
+                    // By name
+                    let by_name_rva = (thunk_val & 0x7FFFFFFF_FFFFFFFF) as u32;
+                    if let Some(by_name_offset) = rva_to_file_offset(pe, by_name_rva) {
+                        let func_name_offset = by_name_offset + 2;
+                        let mut func_name_end = func_name_offset;
+                        while func_name_end < pe_data.len() && pe_data[func_name_end] != 0 {
+                            func_name_end += 1;
+                        }
+
+                        let mut func_name_bytes =
+                            pe_data[func_name_offset..func_name_end].to_vec();
+                        func_name_bytes.push(0);
+
+                        resolved_addr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                            h_module,
+                            func_name_bytes.as_ptr(),
+                        )
+                        .map_or(0, |f| f as u64);
+                    }
+                }
+            }
+
+            pe_data[iat_offset..iat_offset + 8].copy_from_slice(&resolved_addr.to_le_bytes());
+
+            thunk_offset += 8;
+            iat_offset += 8;
+        }
+
+        dir_pos += 20;
+    }
+
+    Ok(())
+}
+
 fn read_pe_file(path: &std::path::Path) -> Result<Vec<u8>> {
     let mut file = std::fs::File::open(path)
         .map_err(|e| DoctorError::InvalidPath(format!("{}: {}", path.display(), e)))?;
@@ -483,7 +597,7 @@ fn get_proc_addr(module: &str, proc_name: &str) -> Result<usize> {
 
     unsafe {
         let h = GetModuleHandleA(mod_bytes.as_ptr());
-        if h == 0 {
+        if h.is_null() {
             return Err(DoctorError::injection_failed(format!(
                 "cannot find module {}",
                 module
@@ -540,8 +654,8 @@ fn build_loader_shellcode_x64() -> Vec<u8> {
     code.push(0x56);
     // push rdi
     code.push(0x57);
-    // sub rsp, 0x28
-    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]);
+    // sub rsp, 0x20 (32 bytes shadow space)
+    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x20]);
 
     // RCX = pointer to LoaderData.
     // mov rsi, rcx
@@ -565,8 +679,8 @@ fn build_loader_shellcode_x64() -> Vec<u8> {
     code.extend_from_slice(&[0xFF, 0xD0]);
 
     // Epilogue.
-    // add rsp, 0x28
-    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x28]);
+    // add rsp, 0x20
+    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x20]);
     // pop rdi
     code.push(0x5F);
     // pop rsi

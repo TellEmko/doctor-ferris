@@ -16,10 +16,7 @@ pub fn register_methods(registry: &mut MethodRegistry) {
     registry.register(Box::new(methods::thread_hijack::ThreadHijackMethod));
     registry.register(Box::new(methods::apc_injection::ApcInjectionMethod));
 
-    #[cfg(feature = "stealth")]
-    {
-        registry.register(Box::new(methods::manual_map::ManualMapMethod));
-    }
+    registry.register(Box::new(methods::manual_map::ManualMapMethod));
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────

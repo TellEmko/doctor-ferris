@@ -55,7 +55,7 @@ pub mod cli;
 
 // ── Convenience re-exports ──────────────────────────────────────────
 
-pub use config::{InjectionConfig, InjectionConfigBuilder, InjectionMode, Target};
+pub use config::{InjectionConfig, InjectionConfigBuilder, Target};
 pub use error::{DoctorError, Result};
 pub use injector::Injector;
 pub use method::{InjectionMethod, MethodRegistry};

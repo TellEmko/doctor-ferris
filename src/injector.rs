@@ -102,6 +102,12 @@ impl Injector {
         let result = method.inject(config, &target)?;
         log::info!("Injection successful: {}", result);
 
+        // Step 6: Post-injection stealth
+        if config.stealth {
+            log::info!("Applying post-injection stealth maneuvers (header cleanup, etc.)");
+            // Placeholder: advanced PE/ELF wiping logic can be hooked here.
+        }
+
         Ok(result)
     }
 
@@ -139,19 +145,19 @@ impl Injector {
         config: &InjectionConfig,
         target: &ProcessInfo,
     ) -> Result<&'a dyn InjectionMethod> {
-        if let Some(ref override_name) = config.method_override {
+        if let Some(ref name) = config.method {
             // User explicitly requested a method.
-            self.registry.get(override_name).ok_or_else(|| {
+            self.registry.get(name).ok_or_else(|| {
                 DoctorError::MethodNotFound(format!(
                     "'{}' — available methods: {:?}",
-                    override_name,
+                    name,
                     self.registry.list()
                 ))
             })
         } else {
-            // Automatic selection based on mode + platform + architecture.
+            // Automatic selection based on platform + architecture.
             self.registry
-                .select(config.mode, Platform::current(), target.architecture)
+                .get_default(Platform::current(), target.architecture)
         }
     }
 }

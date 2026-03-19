@@ -8,32 +8,6 @@ use std::time::Duration;
 
 use crate::error::{DoctorError, Result};
 
-/// Determines the strategy the injector uses when selecting a method.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum InjectionMode {
-    /// Prefer the most reliable, well-tested injection technique.
-    /// Best for general-purpose use where detection is not a concern.
-    #[default]
-    Stability,
-
-    /// Prefer techniques that minimize observable side-effects.
-    /// Avoids `CreateRemoteThread` and similar easily-detected primitives.
-    Stealth,
-
-    /// Prefer techniques with the widest OS version and configuration support.
-    /// Useful when targeting unknown or legacy environments.
-    Compatibility,
-}
-
-impl std::fmt::Display for InjectionMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            InjectionMode::Stability => write!(f, "stability"),
-            InjectionMode::Stealth => write!(f, "stealth"),
-            InjectionMode::Compatibility => write!(f, "compatibility"),
-        }
-    }
-}
 
 /// Target specification — either a PID or a process name.
 #[derive(Debug, Clone)]
@@ -62,7 +36,8 @@ impl std::fmt::Display for Target {
 /// let config = InjectionConfig::builder()
 ///     .dll_path("payload.dll")
 ///     .target_pid(1234)
-///     .mode(InjectionMode::Stealth)
+///     .method("thread_hijack")
+///     .stealth(true)
 ///     .build()
 ///     .expect("valid config");
 /// ```
@@ -72,13 +47,12 @@ pub struct InjectionConfig {
     pub dll_path: PathBuf,
     /// Target process specification.
     pub target: Target,
-    /// Injection mode governing method selection.
-    pub mode: InjectionMode,
-    /// If set, overrides automatic method selection with the named method.
-    pub method_override: Option<String>,
-    /// Whether to attempt privilege escalation if injection fails due to
-    /// insufficient permissions.
+    /// Explicit method to use. If none, a platform default is chosen.
+    pub method: Option<String>,
+    /// Attempt to escalate privileges if required.
     pub elevate_privileges: bool,
+    /// Apply post-injection stealth techniques (e.g., zeroing headers).
+    pub stealth: bool,
     /// Maximum time to wait for the injection to complete.
     pub timeout: Duration,
     /// Whether to skip architecture compatibility validation.
@@ -98,9 +72,9 @@ impl InjectionConfig {
 pub struct InjectionConfigBuilder {
     dll_path: Option<PathBuf>,
     target: Option<Target>,
-    mode: InjectionMode,
-    method_override: Option<String>,
+    method: Option<String>,
     elevate_privileges: bool,
+    stealth: bool,
     timeout: Option<Duration>,
     skip_arch_check: bool,
 }
@@ -124,15 +98,15 @@ impl InjectionConfigBuilder {
         self
     }
 
-    /// Set the injection mode.
-    pub fn mode(mut self, mode: InjectionMode) -> Self {
-        self.mode = mode;
+    /// Set a specific injection method to use.
+    pub fn method(mut self, name: impl Into<String>) -> Self {
+        self.method = Some(name.into());
         self
     }
 
-    /// Override automatic method selection with a specific named method.
-    pub fn method(mut self, method_name: impl Into<String>) -> Self {
-        self.method_override = Some(method_name.into());
+    /// Enable post-injection stealth operations (like PE header cleanup).
+    pub fn stealth(mut self, enable: bool) -> Self {
+        self.stealth = enable;
         self
     }
 
@@ -167,9 +141,9 @@ impl InjectionConfigBuilder {
         Ok(InjectionConfig {
             dll_path,
             target,
-            mode: self.mode,
-            method_override: self.method_override,
+            method: self.method,
             elevate_privileges: self.elevate_privileges,
+            stealth: self.stealth,
             timeout: self.timeout.unwrap_or(Duration::from_secs(30)),
             skip_arch_check: self.skip_arch_check,
         })
@@ -197,13 +171,15 @@ mod tests {
         let config = InjectionConfig::builder()
             .dll_path("test.dll")
             .target_pid(1234)
-            .mode(InjectionMode::Stealth)
+            .method("manual_map")
+            .stealth(true)
             .elevate(true)
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap();
 
-        assert_eq!(config.mode, InjectionMode::Stealth);
+        assert_eq!(config.method.as_deref(), Some("manual_map"));
+        assert!(config.stealth);
         assert!(config.elevate_privileges);
         assert_eq!(config.timeout, Duration::from_secs(10));
     }
