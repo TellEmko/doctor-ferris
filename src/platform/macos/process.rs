@@ -21,7 +21,7 @@ pub fn enumerate() -> Result<Vec<ProcessInfo>> {
             0,
         ) != 0
         {
-            return Err(DoctorError::Other("sysctl size query failed".into()));
+            return Err(DoctorError::Unexpected("The system query for the required buffer size (sysctl) failed".into()));
         }
 
         let count = size / std::mem::size_of::<kinfo_proc>();
@@ -37,7 +37,7 @@ pub fn enumerate() -> Result<Vec<ProcessInfo>> {
             0,
         ) != 0
         {
-            return Err(DoctorError::Other("sysctl process query failed".into()));
+            return Err(DoctorError::Unexpected("The system query for the process list (sysctl) failed".into()));
         }
 
         let actual_count = size / std::mem::size_of::<kinfo_proc>();
@@ -81,14 +81,14 @@ pub fn detect_architecture(pid: Pid) -> Result<Architecture> {
     }
 
     let path = std::str::from_utf8(&path_buf[..path_len as usize])
-        .map_err(|_| DoctorError::Other("non-UTF-8 process path".into()))?;
+        .map_err(|_| DoctorError::Unexpected("The process executable path contains invalid UTF-8 characters".into()))?;
 
     let mut file = std::fs::File::open(path)
-        .map_err(|e| DoctorError::Other(format!("cannot open '{}': {}", path, e)))?;
+        .map_err(|e| DoctorError::Unexpected(format!("Unable to open the executable at '{}': {}", path, e)))?;
 
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)
-        .map_err(|e| DoctorError::Other(format!("cannot read Mach-O header: {}", e)))?;
+        .map_err(|e| DoctorError::Unexpected(format!("Failed to read the Mach-O header from the executable: {}", e)))?;
 
     let magic_val = u32::from_le_bytes(magic);
     Ok(match magic_val {

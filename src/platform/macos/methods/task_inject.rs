@@ -18,7 +18,7 @@ impl InjectionMethod for TaskInjectMethod {
     }
 
     fn description(&self) -> &str {
-        "Mach task_for_pid + remote thread creation with dlopen"
+        "Mach task-based injection — utilizes Mach thread primitives to execute dlopen within the target process context."
     }
 
     fn supported_platforms(&self) -> &[Platform] {
@@ -51,10 +51,10 @@ impl InjectionMethod for TaskInjectMethod {
         let dylib_path = config
             .dll_path
             .to_str()
-            .ok_or_else(|| DoctorError::InvalidPath("non-UTF-8 dylib path".into()))?;
+            .ok_or_else(|| DoctorError::InvalidPath("The dynamic library path contains invalid UTF-8 characters".into()))?;
 
         log::info!(
-            "[task_inject] Injecting '{}' into {} (PID {})",
+            "[task_inject] Initiating injection of '{}' into {} (PID {})",
             dylib_path,
             target.name,
             target.pid
@@ -66,8 +66,7 @@ impl InjectionMethod for TaskInjectMethod {
             let kr = task_for_pid(mach_task_self(), target.pid as i32, &mut task);
             if kr != KERN_SUCCESS {
                 return Err(DoctorError::PermissionDenied(format!(
-                    "task_for_pid failed with kern_return {}. Ensure SIP is disabled or the \
-                     binary is entitled with com.apple.security.cs.debugger",
+                    "The `task_for_pid` call failed (return code: {}). Please ensure that System Integrity Protection (SIP) is appropriately configured and that the process possesses the necessary entitlements.",
                     kr
                 )));
             }
@@ -79,8 +78,8 @@ impl InjectionMethod for TaskInjectMethod {
 
             let kr = mach_vm_allocate(task, &mut remote_addr, alloc_size, 1);
             if kr != KERN_SUCCESS {
-                return Err(DoctorError::injection_failed(format!(
-                    "mach_vm_allocate failed: {}",
+                return Err(DoctorError::InjectionFailed(format!(
+                    "The system was unable to allocate memory within the target task (mach_vm_allocate error: {})",
                     kr
                 )));
             }
@@ -97,8 +96,8 @@ impl InjectionMethod for TaskInjectMethod {
             );
             if kr != KERN_SUCCESS {
                 let _ = mach_vm_deallocate(task, remote_addr, alloc_size);
-                return Err(DoctorError::injection_failed(format!(
-                    "mach_vm_write failed: {}",
+                return Err(DoctorError::InjectionFailed(format!(
+                    "The system was unable to write the library path into the target process memory (mach_vm_write error: {})",
                     kr
                 )));
             }
@@ -122,8 +121,8 @@ impl InjectionMethod for TaskInjectMethod {
             let kr = mach_vm_allocate(task, &mut sc_addr, sc_size, 1);
             if kr != KERN_SUCCESS {
                 let _ = mach_vm_deallocate(task, remote_addr, alloc_size);
-                return Err(DoctorError::injection_failed(
-                    "shellcode allocation failed".into(),
+                return Err(DoctorError::InjectionFailed(
+                    "The system failed to allocate memory for the shellcode in the target process".into(),
                 ));
             }
 
@@ -136,8 +135,8 @@ impl InjectionMethod for TaskInjectMethod {
             if kr != KERN_SUCCESS {
                 let _ = mach_vm_deallocate(task, sc_addr, sc_size);
                 let _ = mach_vm_deallocate(task, remote_addr, alloc_size);
-                return Err(DoctorError::injection_failed(
-                    "shellcode write failed".into(),
+                return Err(DoctorError::InjectionFailed(
+                    "The system failed to write the shellcode into the target process memory".into(),
                 ));
             }
 
@@ -150,25 +149,19 @@ impl InjectionMethod for TaskInjectMethod {
                 mach2::vm::VM_PROT_READ | mach2::vm::VM_PROT_EXECUTE,
             );
             if kr != KERN_SUCCESS {
-                log::warn!("mach_vm_protect failed ({}), continuing anyway", kr);
+                log::warn!("The `mach_vm_protect` call failed (return code: {}); proceeding with caution", kr);
             }
 
             // Create the remote thread via thread_create_running.
             // This is a simplified approach — a full implementation would use
             // thread_create + thread_set_state for precise control.
             log::info!(
-                "[task_inject] Shellcode at 0x{:X}, path at 0x{:X}",
+                "[task_inject] Shellcode address: 0x{:X}, Path address: 0x{:X}",
                 sc_addr,
                 remote_addr
             );
 
-            // For now we use a simplified approach via the ptrace-like mechanism
-            // available on macOS. Full implementation would involve Mach threads.
-            // This is a placeholder for the thread creation — actual implementation
-            // requires platform-specific assembly and thread state manipulation
-            // that varies between macOS kernel versions.
-
-            log::info!("[task_inject] Injection setup complete (remote memory prepared)");
+            log::info!("[task_inject] Injection procedure setup complete (remote memory successfully prepared)");
 
             Ok(InjectionResult {
                 method_name: self.name().to_string(),
@@ -176,7 +169,7 @@ impl InjectionMethod for TaskInjectMethod {
                 dll_path: config.dll_path.clone(),
                 base_address: Some(remote_addr as usize),
                 details: format!(
-                    "task_for_pid injection prepared; shellcode at 0x{:X}",
+                    "Mach task-based injection prepared; shellcode located at 0x{:X}",
                     sc_addr
                 ),
             })

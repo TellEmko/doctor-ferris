@@ -23,7 +23,7 @@ impl InjectionMethod for ThreadHijackMethod {
     }
 
     fn description(&self) -> &str {
-        "Thread context hijacking — no new threads created, evades thread-creation monitoring"
+        "Thread context redirection — executes code via an existing thread to evade thread-creation monitoring"
     }
 
     fn supported_platforms(&self) -> &[Platform] {
@@ -50,8 +50,7 @@ impl InjectionMethod for ThreadHijackMethod {
     fn inject(&self, config: &InjectionConfig, target: &ProcessInfo) -> Result<InjectionResult> {
         use windows_sys::Win32::System::Threading::*;
 
-        // CONTEXT_FULL for AMD64 is not directly exported by windows-sys.
-        // It is CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS | CONTEXT_FLOATING_POINT | CONTEXT_DEBUG_REGISTERS.
+        // Define the full context flag for AMD64 architectures.
         const CONTEXT_AMD64: u32 = 0x00100000;
         const CONTEXT_CONTROL_FLAG: u32 = CONTEXT_AMD64 | 0x01;
         const CONTEXT_INTEGER_FLAG: u32 = CONTEXT_AMD64 | 0x02;
@@ -62,119 +61,110 @@ impl InjectionMethod for ThreadHijackMethod {
             | CONTEXT_SEGMENTS_FLAG
             | CONTEXT_FLOATING_POINT_FLAG;
 
-        let dll_path_str = config
+        let dll_path_string = config
             .dll_path
             .to_str()
-            .ok_or_else(|| DoctorError::InvalidPath("non-UTF-8 DLL path".into()))?;
+            .ok_or_else(|| DoctorError::InvalidPath("The provided DLL path contains non-UTF-8 characters".into()))?;
 
-        let mut dll_bytes = dll_path_str.as_bytes().to_vec();
-        dll_bytes.push(0);
+        let mut dll_path_bytes = dll_path_string.as_bytes().to_vec();
+        dll_path_bytes.push(0);
 
         log::info!(
-            "[thread_hijack] Injecting '{}' into {} (PID {})",
-            dll_path_str,
+            "[thread_hijack] Initiating context redirection of '{}' into {} (Process ID: {})",
+            dll_path_string,
             target.name,
             target.pid
         );
 
-        let process = super::super::open_process_for_injection(target.pid)?;
-        let load_library = super::super::resolve_loadlibrary_a()?;
+        let target_process = super::super::open_process_for_injection(target.pid)?;
+        let load_library_procedure = super::super::resolve_load_library_a()?;
 
         unsafe {
-            // Write the DLL path into the target process.
-            let remote_path = super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
+            // Allocate memory and write the DLL path into the target process space.
+            let remote_path_address = super::super::remote_alloc_and_write(target_process.raw(), &dll_path_bytes)?;
 
-            // Find a suitable thread to hijack.
-            let thread_id = find_thread(target.pid)?;
+            // Identify a suitable thread within the target process for redirection.
+            let target_thread_id = locate_suitable_thread(target.pid)?;
 
-            let thread = OpenThread(
-                THREAD_SUSPEND_RESUME
-                    | THREAD_GET_CONTEXT
-                    | THREAD_SET_CONTEXT
-                    | THREAD_QUERY_INFORMATION,
-                0,
-                thread_id,
-            );
-            let thread_handle = super::super::SafeHandle::new(thread).ok_or_else(|| {
-                DoctorError::injection_failed(format!("failed to open thread {}", thread_id))
+            let thread_access_rights = THREAD_SUSPEND_RESUME
+                | THREAD_GET_CONTEXT
+                | THREAD_SET_CONTEXT
+                | THREAD_QUERY_INFORMATION;
+
+            let thread_handle_raw = OpenThread(thread_access_rights, 0, target_thread_id);
+            let target_thread_handle = super::super::SafeHandle::new(thread_handle_raw).ok_or_else(|| {
+                DoctorError::injection_failed(format!("Unable to open target thread {}", target_thread_id))
             })?;
 
-            // Suspend the thread.
-            if SuspendThread(thread_handle.raw()) == u32::MAX {
-                super::super::remote_free(process.raw(), remote_path);
+            // Suspend the target thread to perform context manipulation.
+            if SuspendThread(target_thread_handle.raw()) == u32::MAX {
+                super::super::remote_free(target_process.raw(), remote_path_address);
                 return Err(super::super::last_os_error());
             }
 
-            // Build x86_64 shellcode that calls LoadLibraryA(remote_path)
-            // then jumps back to the original RIP.
-            let mut ctx: windows_sys::Win32::System::Diagnostics::Debug::CONTEXT =
+            // Retrieve the current register state (context) of the target thread.
+            let mut thread_context: windows_sys::Win32::System::Diagnostics::Debug::CONTEXT =
                 std::mem::zeroed();
-            ctx.ContextFlags = CONTEXT_FULL_VALUE;
+            thread_context.ContextFlags = CONTEXT_FULL_VALUE;
 
             if windows_sys::Win32::System::Diagnostics::Debug::GetThreadContext(
-                thread_handle.raw(),
-                &mut ctx,
+                target_thread_handle.raw(),
+                &mut thread_context,
             ) == 0
             {
-                ResumeThread(thread_handle.raw());
-                super::super::remote_free(process.raw(), remote_path);
+                ResumeThread(target_thread_handle.raw());
+                super::super::remote_free(target_process.raw(), remote_path_address);
                 return Err(super::super::last_os_error());
             }
 
-            let original_rip = ctx.Rip;
+            let original_instruction_pointer = thread_context.Rip;
 
-            // Shellcode layout (x86_64):
-            //   sub rsp, 0x28          ; shadow space
-            //   mov rcx, <remote_path> ; arg1 = DLL path
-            //   mov rax, <LoadLibraryA>
-            //   call rax
-            //   add rsp, 0x28
-            //   mov rax, <original_rip>
-            //   jmp rax
-            let shellcode =
-                build_hijack_shellcode_x64(remote_path as u64, load_library as u64, original_rip);
-
-            // Write shellcode to the target.
-            let shellcode_addr = super::super::remote_alloc_and_write(process.raw(), &shellcode)?;
-
-            // Make shellcode executable.
-            let mut old_protect = 0u32;
-            windows_sys::Win32::System::Memory::VirtualProtectEx(
-                process.raw(),
-                shellcode_addr,
-                shellcode.len(),
-                windows_sys::Win32::System::Memory::PAGE_EXECUTE_READ,
-                &mut old_protect,
+            // Assemble x86_64 shellcode to invoke LoadLibraryA and return to the original execution flow.
+            let redirection_shellcode = build_redirection_shellcode_x64(
+                remote_path_address as u64,
+                load_library_procedure as u64,
+                original_instruction_pointer,
             );
 
-            // Redirect the thread to our shellcode.
-            ctx.Rip = shellcode_addr as u64;
+            // Write the redirection shellcode into the target process.
+            let shellcode_allocation_address = super::super::remote_alloc_and_write(target_process.raw(), &redirection_shellcode)?;
+
+            // Update memory protections to allow execution of the redirection shellcode.
+            let mut previous_protection_flags = 0u32;
+            windows_sys::Win32::System::Memory::VirtualProtectEx(
+                target_process.raw(),
+                shellcode_allocation_address,
+                redirection_shellcode.len(),
+                windows_sys::Win32::System::Memory::PAGE_EXECUTE_READ,
+                &mut previous_protection_flags,
+            );
+
+            // Modify the thread's instruction pointer to point to the redirection shellcode.
+            thread_context.Rip = shellcode_allocation_address as u64;
 
             if windows_sys::Win32::System::Diagnostics::Debug::SetThreadContext(
-                thread_handle.raw(),
-                &ctx,
+                target_thread_handle.raw(),
+                &thread_context,
             ) == 0
             {
-                ResumeThread(thread_handle.raw());
-                super::super::remote_free(process.raw(), remote_path);
-                super::super::remote_free(process.raw(), shellcode_addr);
+                ResumeThread(target_thread_handle.raw());
+                super::super::remote_free(target_process.raw(), remote_path_address);
+                super::super::remote_free(target_process.raw(), shellcode_allocation_address);
                 return Err(super::super::last_os_error());
             }
 
-            // Resume the thread — it will execute our shellcode then return
-            // to its original instruction.
-            ResumeThread(thread_handle.raw());
+            // Resume the thread to execute the injected payload redirection.
+            ResumeThread(target_thread_handle.raw());
 
-            // Give the thread time to execute the shellcode.
+            // Allow a brief period for the redirection shellcode to finalize execution.
             std::thread::sleep(std::time::Duration::from_millis(500));
 
-            // Clean up. The shellcode has already jumped back to the original RIP,
-            // so it is safe to free.
-            super::super::remote_free(process.raw(), shellcode_addr);
+            // Release the memory allocated for the redirection shellcode.
+            super::super::remote_free(target_process.raw(), shellcode_allocation_address);
 
             log::info!(
-                "[thread_hijack] Injection complete via thread {}",
-                thread_id
+                "[thread_hijack] Context redirection procedure completed via thread {}",
+                target_thread_id
             );
 
             Ok(InjectionResult {
@@ -182,30 +172,30 @@ impl InjectionMethod for ThreadHijackMethod {
                 target: target.clone(),
                 dll_path: config.dll_path.clone(),
                 base_address: None,
-                details: format!("Thread hijack injection successful (thread {})", thread_id),
+                details: format!("Thread context redirection successful (Thread ID: {})", target_thread_id),
             })
         }
     }
 }
 
-/// Find the first thread belonging to the target process.
-fn find_thread(pid: u32) -> Result<u32> {
+/// Identifies the first available thread belonging to the specified process.
+fn locate_suitable_thread(process_id: u32) -> Result<u32> {
     use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
 
     unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        let snap =
-            super::super::SafeHandle::new(snapshot).ok_or_else(super::super::last_os_error)?;
+        let snapshot_handle = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        let snapshot =
+            super::super::SafeHandle::new(snapshot_handle).ok_or_else(super::super::last_os_error)?;
 
-        let mut entry: THREADENTRY32 = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut thread_entry: THREADENTRY32 = std::mem::zeroed();
+        thread_entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
 
-        if Thread32First(snap.raw(), &mut entry) != 0 {
+        if Thread32First(snapshot.raw(), &mut thread_entry) != 0 {
             loop {
-                if entry.th32OwnerProcessID == pid {
-                    return Ok(entry.th32ThreadID);
+                if thread_entry.th32OwnerProcessID == process_id {
+                    return Ok(thread_entry.th32ThreadID);
                 }
-                if Thread32Next(snap.raw(), &mut entry) == 0 {
+                if Thread32Next(snapshot.raw(), &mut thread_entry) == 0 {
                     break;
                 }
             }
@@ -213,46 +203,45 @@ fn find_thread(pid: u32) -> Result<u32> {
     }
 
     Err(DoctorError::injection_failed(format!(
-        "no threads found for PID {}",
-        pid
+        "No active threads were discovered for Process ID {}",
+        process_id
     )))
 }
 
-/// Build x86_64 shellcode that calls `LoadLibraryA(dll_path)` then jumps back
-/// to `original_rip`.
-fn build_hijack_shellcode_x64(
-    dll_path_addr: u64,
-    loadlibrary_addr: u64,
-    original_rip: u64,
+/// Constructs x86_64 shellcode that invokes `LoadLibraryA` and returns to the `original_instruction_pointer`.
+fn build_redirection_shellcode_x64(
+    dll_path_address: u64,
+    load_library_address: u64,
+    original_instruction_pointer: u64,
 ) -> Vec<u8> {
-    let mut code = Vec::with_capacity(64);
+    let mut shellcode_buffer = Vec::with_capacity(64);
 
-    // sub rsp, 0x28 (allocate shadow space + alignment)
-    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]);
+    // Reserve shadow space on the stack (0x28 bytes for alignment).
+    shellcode_buffer.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]);
 
-    // mov rcx, <dll_path_addr>  (first argument)
-    code.push(0x48);
-    code.push(0xB9);
-    code.extend_from_slice(&dll_path_addr.to_le_bytes());
+    // Move the DLL path address into the RCX register (first argument).
+    shellcode_buffer.push(0x48);
+    shellcode_buffer.push(0xB9);
+    shellcode_buffer.extend_from_slice(&dll_path_address.to_le_bytes());
 
-    // mov rax, <loadlibrary_addr>
-    code.push(0x48);
-    code.push(0xB8);
-    code.extend_from_slice(&loadlibrary_addr.to_le_bytes());
+    // Move the LoadLibraryA address into the RAX register.
+    shellcode_buffer.push(0x48);
+    shellcode_buffer.push(0xB8);
+    shellcode_buffer.extend_from_slice(&load_library_address.to_le_bytes());
 
-    // call rax
-    code.extend_from_slice(&[0xFF, 0xD0]);
+    // Execute the call to LoadLibraryA.
+    shellcode_buffer.extend_from_slice(&[0xFF, 0xD0]);
 
-    // add rsp, 0x28
-    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x28]);
+    // Restore the stack pointer.
+    shellcode_buffer.extend_from_slice(&[0x48, 0x83, 0xC4, 0x28]);
 
-    // mov rax, <original_rip>
-    code.push(0x48);
-    code.push(0xB8);
-    code.extend_from_slice(&original_rip.to_le_bytes());
+    // Move the original instruction pointer into the RAX register.
+    shellcode_buffer.push(0x48);
+    shellcode_buffer.push(0xB8);
+    shellcode_buffer.extend_from_slice(&original_instruction_pointer.to_le_bytes());
 
-    // jmp rax
-    code.extend_from_slice(&[0xFF, 0xE0]);
+    // Jump to the original execution point.
+    shellcode_buffer.extend_from_slice(&[0xFF, 0xE0]);
 
-    code
+    shellcode_buffer
 }

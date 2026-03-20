@@ -3,7 +3,6 @@
 //! All fallible operations in this crate return [`Result<T>`] which uses
 //! [`DoctorError`] as the error variant.
 
-use std::fmt;
 
 /// Convenience alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, DoctorError>;
@@ -11,56 +10,56 @@ pub type Result<T> = std::result::Result<T, DoctorError>;
 /// Enumerates all error conditions the injection framework can produce.
 #[derive(Debug, thiserror::Error)]
 pub enum DoctorError {
-    /// The target process could not be found by PID or name.
-    #[error("process not found: {0}")]
+    /// The specified process could not be located using the provided identifier or name.
+    #[error("Process not found: {0}")]
     ProcessNotFound(String),
 
-    /// The DLL architecture does not match the target process architecture.
-    #[error("architecture mismatch: DLL is {dll_arch}, target process is {process_arch}")]
+    /// The DLL architecture is incompatible with the target process architecture.
+    #[error("Architecture mismatch: DLL is {dll_arch}, target process is {process_arch}")]
     ArchitectureMismatch {
         dll_arch: String,
         process_arch: String,
     },
 
-    /// The current process lacks the required privileges for the operation.
-    #[error("permission denied: {0}")]
+    /// The current process possesses insufficient privileges to perform the requested operation.
+    #[error("Permission denied: {0}")]
     PermissionDenied(String),
 
-    /// The injection procedure itself failed.
-    #[error("injection failed: {0}")]
+    /// The procedure was unable to complete the injection into the target process.
+    #[error("Injection procedure failed: {0}")]
     InjectionFailed(String),
 
-    /// The supplied DLL path is invalid or the file does not exist.
-    #[error("invalid DLL path: {0}")]
+    /// The specified library path is invalid or the file does not exist on the filesystem.
+    #[error("Invalid library path: {0}")]
     InvalidPath(String),
 
-    /// The requested injection method is not registered in the method registry.
-    #[error("method not found: {0}")]
+    /// The requested injection method is not registered within the framework's internal registry.
+    #[error("Injection method not found: {0}")]
     MethodNotFound(String),
 
-    /// The current platform does not support the requested operation.
-    #[error("platform unsupported: {0}")]
+    /// The current operating system or hardware platform does not support the requested operation.
+    #[error("Platform unsupported: {0}")]
     PlatformUnsupported(String),
 
-    /// The target process or DLL failed a validation check.
-    #[error("validation failed: {0}")]
+    /// The target process or library failed a prerequisite validation check.
+    #[error("Validation failed: {0}")]
     ValidationFailed(String),
 
-    /// A timeout expired while waiting for an operation to complete.
-    #[error("operation timed out after {0:?}")]
+    /// An operation timed out before completing successfully.
+    #[error("Operation timed out after {0:?}")]
     Timeout(std::time::Duration),
 
-    /// An I/O error propagated from the standard library.
+    /// An I/O error occurred during an interaction with the operating system.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A platform-specific OS error with a raw error code.
-    #[error("OS error {code}: {message}")]
+    /// A platform-specific OS error occurred with a native error code.
+    #[error("OS error (code: {code}): {message}")]
     OsError { code: i64, message: String },
 
-    /// Catch-all for errors that do not fit other variants.
-    #[error("{0}")]
-    Other(String),
+    /// An unexpected error occurred that does not fall into other categories.
+    #[error("Unexpected error: {0}")]
+    Unexpected(String),
 }
 
 impl DoctorError {
@@ -75,6 +74,11 @@ impl DoctorError {
     /// Construct an [`InjectionFailed`](DoctorError::InjectionFailed) with a formatted message.
     pub fn injection_failed(message: impl Into<String>) -> Self {
         Self::InjectionFailed(message.into())
+    }
+
+    /// Construct a [`ValidationFailed`](DoctorError::ValidationFailed) with a formatted message.
+    pub fn validation_failed(message: impl Into<String>) -> Self {
+        Self::ValidationFailed(message.into())
     }
 
     /// Returns `true` if the error is recoverable and the operation may be retried.

@@ -18,7 +18,7 @@ impl InjectionMethod for DyldInsertMethod {
     }
 
     fn description(&self) -> &str {
-        "DYLD_INSERT_LIBRARIES pre-launch injection — macOS equivalent of LD_PRELOAD"
+        "DYLD_INSERT_LIBRARIES pre-launch injection — initiates a new target process with the specified dynamic library pre-loaded."
     }
 
     fn supported_platforms(&self) -> &[Platform] {
@@ -44,10 +44,10 @@ impl InjectionMethod for DyldInsertMethod {
 
         let dylib_str = dylib_path
             .to_str()
-            .ok_or_else(|| DoctorError::InvalidPath("non-UTF-8 dylib path".into()))?;
+            .ok_or_else(|| DoctorError::InvalidPath("The dynamic library path contains invalid UTF-8 characters".into()))?;
 
         log::info!(
-            "[dyld_insert] Launching '{}' with DYLD_INSERT_LIBRARIES='{}'",
+            "[dyld_insert] Initiating target execution: '{}' with preloaded library: '{}'",
             target.name,
             dylib_str
         );
@@ -57,13 +57,13 @@ impl InjectionMethod for DyldInsertMethod {
             .env("DYLD_FORCE_FLAT_NAMESPACE", "1")
             .spawn()
             .map_err(|e| {
-                DoctorError::injection_failed(format!("failed to spawn '{}': {}", target.name, e))
+                DoctorError::InjectionFailed(format!("The system was unable to spawn the target process '{}': {}", target.name, e))
             })?;
 
         let child_pid = child.id();
 
         log::info!(
-            "[dyld_insert] Process spawned with PID {} and DYLD_INSERT_LIBRARIES active",
+            "[dyld_insert] Target process successfully spawned (PID: {}) with DYLD_INSERT_LIBRARIES active",
             child_pid
         );
 

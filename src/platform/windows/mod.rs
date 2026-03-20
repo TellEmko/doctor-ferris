@@ -19,7 +19,9 @@ pub fn register_methods(registry: &mut MethodRegistry) {
     registry.register(Box::new(methods::manual_map::ManualMapMethod));
 }
 
-// ── Shared helpers ───────────────────────────────────────────────────
+// ----------------------------------------------------------------------
+// Shared Helpers
+// ----------------------------------------------------------------------
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 
@@ -52,85 +54,87 @@ impl Drop for SafeHandle {
     }
 }
 
-/// Retrieve the last Win32 error as a [`crate::error::DoctorError::OsError`].
+/// Retrieve the last Win32 error as a [`DoctorError::OsError`].
 pub(crate) fn last_os_error() -> crate::error::DoctorError {
-    let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-    crate::error::DoctorError::os_error(code as i64, format!("Win32 error {}", code))
+    let error_code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+    crate::error::DoctorError::os_error(
+        error_code as i64,
+        format!("Win32 operational failure (code: {})", error_code),
+    )
 }
 
-/// Allocate memory in a remote process and write `data` into it.
+/// Allocates memory within a remote process and writes the specified data buffer into it.
 ///
-/// Returns the base address of the allocation in the target process.
+/// Returns the base address of the newly allocated memory in the target process.
 pub(crate) unsafe fn remote_alloc_and_write(
-    process: HANDLE,
-    data: &[u8],
+    process_handle: HANDLE,
+    data_buffer: &[u8],
 ) -> crate::error::Result<*mut std::ffi::c_void> {
     use windows_sys::Win32::System::Memory::*;
 
-    let addr = VirtualAllocEx(
-        process,
+    let allocation_address = VirtualAllocEx(
+        process_handle,
         std::ptr::null(),
-        data.len(),
+        data_buffer.len(),
         MEM_COMMIT | MEM_RESERVE,
         PAGE_READWRITE,
     );
 
-    if addr.is_null() {
+    if allocation_address.is_null() {
         return Err(last_os_error());
     }
 
-    let mut bytes_written = 0usize;
-    let ok = windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory(
-        process,
-        addr,
-        data.as_ptr().cast(),
-        data.len(),
-        &mut bytes_written,
+    let mut bytes_written_count = 0usize;
+    let write_success = windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory(
+        process_handle,
+        allocation_address,
+        data_buffer.as_ptr().cast(),
+        data_buffer.len(),
+        &mut bytes_written_count,
     );
 
-    if ok == 0 || bytes_written != data.len() {
-        VirtualFreeEx(process, addr, 0, MEM_RELEASE);
+    if write_success == 0 || bytes_written_count != data_buffer.len() {
+        VirtualFreeEx(process_handle, allocation_address, 0, MEM_RELEASE);
         return Err(last_os_error());
     }
 
-    Ok(addr)
+    Ok(allocation_address)
 }
 
-/// Free previously allocated remote memory.
-pub(crate) unsafe fn remote_free(process: HANDLE, addr: *mut std::ffi::c_void) {
+/// Deallocates previously reserved or committed memory within a remote process.
+pub(crate) unsafe fn remote_free(process_handle: HANDLE, memory_address: *mut std::ffi::c_void) {
     use windows_sys::Win32::System::Memory::*;
-    VirtualFreeEx(process, addr, 0, MEM_RELEASE);
+    VirtualFreeEx(process_handle, memory_address, 0, MEM_RELEASE);
 }
 
-/// Resolve the address of `LoadLibraryA` within `kernel32.dll`.
-pub(crate) fn resolve_loadlibrary_a() -> crate::error::Result<unsafe extern "system" fn() -> isize>
-{
+/// Resolves the memory address of the `LoadLibraryA` function within `kernel32.dll`.
+pub(crate) fn resolve_load_library_a() -> crate::error::Result<unsafe extern "system" fn() -> isize> {
     use windows_sys::Win32::System::LibraryLoader::*;
 
     unsafe {
-        let kernel32 = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
-        if kernel32.is_null() {
+        let kernel32_handle = GetModuleHandleA(b"kernel32.dll\0".as_ptr());
+        if kernel32_handle.is_null() {
             return Err(last_os_error());
         }
 
-        let addr = GetProcAddress(kernel32, b"LoadLibraryA\0".as_ptr());
-        match addr {
-            Some(f) => Ok(std::mem::transmute(f)),
+        let procedure_address = GetProcAddress(kernel32_handle, b"LoadLibraryA\0".as_ptr());
+        match procedure_address {
+            Some(function_pointer) => Ok(std::mem::transmute(function_pointer)),
             None => Err(last_os_error()),
         }
     }
 }
 
-/// Open a process with the required access rights for injection.
-pub(crate) fn open_process_for_injection(pid: u32) -> crate::error::Result<SafeHandle> {
+/// Opens a target process with the specific access rights required for library injection.
+pub(crate) fn open_process_for_injection(process_id: u32) -> crate::error::Result<SafeHandle> {
     use windows_sys::Win32::System::Threading::*;
 
-    let access = PROCESS_CREATE_THREAD
+    let access_rights = PROCESS_CREATE_THREAD
         | PROCESS_VM_OPERATION
         | PROCESS_VM_WRITE
         | PROCESS_VM_READ
         | PROCESS_QUERY_INFORMATION;
 
-    let handle = unsafe { OpenProcess(access, 0, pid) };
-    SafeHandle::new(handle).ok_or_else(last_os_error)
+    let process_handle = unsafe { OpenProcess(access_rights, 0, process_id) };
+    SafeHandle::new(process_handle).ok_or_else(last_os_error)
 }

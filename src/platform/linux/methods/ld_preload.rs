@@ -18,7 +18,7 @@ impl InjectionMethod for LdPreloadMethod {
     }
 
     fn description(&self) -> &str {
-        "LD_PRELOAD pre-launch injection — spawns target with the shared object preloaded"
+        "LD_PRELOAD pre-launch injection — initiates a new target process with the specified shared object pre-loaded."
     }
 
     fn supported_platforms(&self) -> &[Platform] {
@@ -44,10 +44,10 @@ impl InjectionMethod for LdPreloadMethod {
 
         let so_str = so_path
             .to_str()
-            .ok_or_else(|| DoctorError::InvalidPath("non-UTF-8 shared object path".into()))?;
+            .ok_or_else(|| DoctorError::InvalidPath("The shared object path contains invalid UTF-8 characters".into()))?;
 
         log::info!(
-            "[ld_preload] Launching '{}' with LD_PRELOAD='{}'",
+            "[ld_preload] Initiating target execution: '{}' with preloaded shared object: '{}'",
             target.name,
             so_str
         );
@@ -56,13 +56,13 @@ impl InjectionMethod for LdPreloadMethod {
             .env("LD_PRELOAD", so_str)
             .spawn()
             .map_err(|e| {
-                DoctorError::injection_failed(format!("failed to spawn '{}': {}", target.name, e))
+                DoctorError::InjectionFailed(format!("The system was unable to spawn the target process '{}': {}", target.name, e))
             })?;
 
         let child_pid = child.id();
 
         log::info!(
-            "[ld_preload] Process spawned with PID {} and LD_PRELOAD active",
+            "[ld_preload] Target process successfully spawned (PID: {}) with LD_PRELOAD active",
             child_pid
         );
 

@@ -15,19 +15,19 @@ use crate::types::{Architecture, InjectionResult, Platform, ProcessInfo};
 /// Injection via `NtCreateThreadEx` from `ntdll.dll`.
 pub struct NtCreateThreadMethod;
 
-/// `NtCreateThreadEx` function signature (undocumented).
-type FnNtCreateThreadEx = unsafe extern "system" fn(
-    ThreadHandle: *mut windows_sys::Win32::Foundation::HANDLE,
-    DesiredAccess: u32,
-    ObjectAttributes: *mut std::ffi::c_void,
-    ProcessHandle: windows_sys::Win32::Foundation::HANDLE,
-    StartRoutine: *mut std::ffi::c_void,
-    Argument: *mut std::ffi::c_void,
-    CreateFlags: u32,
-    ZeroBits: usize,
-    StackSize: usize,
-    MaximumStackSize: usize,
-    AttributeList: *mut std::ffi::c_void,
+/// The function signature for the undocumented `NtCreateThreadEx` system call.
+type NtCreateThreadExFunction = unsafe extern "system" fn(
+    thread_handle: *mut windows_sys::Win32::Foundation::HANDLE,
+    desired_access: u32,
+    object_attributes: *mut std::ffi::c_void,
+    process_handle: windows_sys::Win32::Foundation::HANDLE,
+    start_routine: *mut std::ffi::c_void,
+    argument: *mut std::ffi::c_void,
+    create_flags: u32,
+    zero_bits: usize,
+    stack_size: usize,
+    maximum_stack_size: usize,
+    attribute_list: *mut std::ffi::c_void,
 ) -> i32;
 
 impl InjectionMethod for NtCreateThreadMethod {
@@ -36,7 +36,7 @@ impl InjectionMethod for NtCreateThreadMethod {
     }
 
     fn description(&self) -> &str {
-        "NtCreateThreadEx-based injection (bypasses user-mode hooks on CreateRemoteThread)"
+        "Injection using the native NtCreateThreadEx system call to bypass user-mode API monitoring"
     }
 
     fn supported_platforms(&self) -> &[Platform] {
@@ -60,99 +60,107 @@ impl InjectionMethod for NtCreateThreadMethod {
     }
 
     fn inject(&self, config: &InjectionConfig, target: &ProcessInfo) -> Result<InjectionResult> {
-        let dll_path_str = config
+        let dll_path_string = config
             .dll_path
             .to_str()
-            .ok_or_else(|| DoctorError::InvalidPath("non-UTF-8 DLL path".into()))?;
+            .ok_or_else(|| DoctorError::InvalidPath("The provided DLL path contains non-UTF-8 characters".into()))?;
 
-        let mut dll_bytes = dll_path_str.as_bytes().to_vec();
-        dll_bytes.push(0);
+        let mut dll_path_bytes = dll_path_string.as_bytes().to_vec();
+        dll_path_bytes.push(0);
 
         log::info!(
-            "[ntcreatethread] Injecting '{}' into {} (PID {})",
-            dll_path_str,
+            "[ntcreatethread] Executing injection of '{}' into {} (Process ID: {})",
+            dll_path_string,
             target.name,
             target.pid
         );
 
-        // Resolve NtCreateThreadEx from ntdll.dll.
-        let nt_create_thread_ex = resolve_nt_create_thread_ex()?;
+        // Retrieve the memory address of the NtCreateThreadEx system call from ntdll.dll.
+        let nt_create_thread_ex_procedure = resolve_nt_create_thread_ex()?;
 
-        // Resolve LoadLibraryA as the thread entry point.
-        let load_library = super::super::resolve_loadlibrary_a()?;
+        // Resolve the entry point for the remote thread (LoadLibraryA).
+        let load_library_entry_point = super::super::resolve_load_library_a()?;
 
-        let process = super::super::open_process_for_injection(target.pid)?;
+        // Obtain a handle to the target process with sufficient privileges.
+        let target_process = super::super::open_process_for_injection(target.pid)?;
 
         unsafe {
-            let remote_path = super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
+            // Write the DLL path string into the target process memory.
+            let remote_path_address = super::super::remote_alloc_and_write(target_process.raw(), &dll_path_bytes)?;
 
-            let mut thread_handle: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
+            let mut remote_thread_handle: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
 
-            // THREAD_ALL_ACCESS = 0x1FFFFF
-            let status = nt_create_thread_ex(
-                &mut thread_handle,
-                0x1FFFFF,
+            // Define full thread access rights (0x1FFFFF).
+            const THREAD_ALL_ACCESS: u32 = 0x1FFFFF;
+
+            // Invoke NtCreateThreadEx to execute LoadLibraryA within the target process context.
+            let status = nt_create_thread_ex_procedure(
+                &mut remote_thread_handle,
+                THREAD_ALL_ACCESS,
                 std::ptr::null_mut(),
-                process.raw(),
-                load_library as *mut std::ffi::c_void,
-                remote_path,
-                0, // No creation flags — thread starts immediately.
-                0, // ZeroBits
-                0, // StackSize (default)
-                0, // MaximumStackSize (default)
-                std::ptr::null_mut(),
+                target_process.raw(),
+                load_library_entry_point as *mut std::ffi::c_void,
+                remote_path_address,
+                0, // CreateFlags: 0 ensures the thread starts execution immediately.
+                0, // ZeroBits: Default alignment.
+                0, // StackSize: Use default stack size.
+                0, // MaximumStackSize: Use default maximum stack size.
+                std::ptr::null_mut(), // AttributeList: Not required for this procedure.
             );
 
-            if status < 0 || thread_handle.is_null() {
-                super::super::remote_free(process.raw(), remote_path);
+            if status < 0 || remote_thread_handle.is_null() {
+                super::super::remote_free(target_process.raw(), remote_path_address);
                 return Err(DoctorError::injection_failed(format!(
-                    "NtCreateThreadEx returned NTSTATUS 0x{:08X}",
+                    "The NtCreateThreadEx system call failed with NTSTATUS: 0x{:08X}",
                     status as u32
                 )));
             }
 
-            let thread_guard = super::super::SafeHandle::new(thread_handle);
+            let thread_guard = super::super::SafeHandle::new(remote_thread_handle);
 
-            // Wait for thread completion.
-            let wait = windows_sys::Win32::System::Threading::WaitForSingleObject(
-                thread_guard.as_ref().map_or(thread_handle, |h| h.raw()),
+            // Synchronize with the remote thread and wait for its completion.
+            let wait_result = windows_sys::Win32::System::Threading::WaitForSingleObject(
+                thread_guard.as_ref().map_or(remote_thread_handle, |h| h.raw()),
                 config.timeout.as_millis() as u32,
             );
 
-            super::super::remote_free(process.raw(), remote_path);
+            // Relinquish the remote memory allocated for the DLL path.
+            super::super::remote_free(target_process.raw(), remote_path_address);
 
-            if wait == 0x00000102 {
+            // Check for execution timeout.
+            const WAIT_TIMEOUT: u32 = 0x00000102;
+            if wait_result == WAIT_TIMEOUT {
                 return Err(DoctorError::Timeout(config.timeout));
             }
 
-            log::info!("[ntcreatethread] Injection complete");
+            log::info!("[ntcreatethread] Injection procedure finalized successfully");
 
             Ok(InjectionResult {
                 method_name: self.name().to_string(),
                 target: target.clone(),
                 dll_path: config.dll_path.clone(),
                 base_address: None,
-                details: "NtCreateThreadEx injection successful".into(),
+                details: "Library injection performed successfully via NtCreateThreadEx".into(),
             })
         }
     }
 }
 
-/// Dynamically resolve `NtCreateThreadEx` from `ntdll.dll`.
-fn resolve_nt_create_thread_ex() -> Result<FnNtCreateThreadEx> {
+/// Dynamically resolves the address of the `NtCreateThreadEx` system call from `ntdll.dll`.
+fn resolve_nt_create_thread_ex() -> Result<NtCreateThreadExFunction> {
     use windows_sys::Win32::System::LibraryLoader::*;
 
     unsafe {
-        let ntdll = GetModuleHandleA(b"ntdll.dll\0".as_ptr());
-        if ntdll.is_null() {
-            return Err(DoctorError::injection_failed("failed to locate ntdll.dll"));
+        let ntdll_handle = GetModuleHandleA(b"ntdll.dll\0".as_ptr());
+        if ntdll_handle.is_null() {
+            return Err(DoctorError::injection_failed("The system was unable to locate ntdll.dll"));
         }
 
-        let addr = GetProcAddress(ntdll, b"NtCreateThreadEx\0".as_ptr());
-        match addr {
-            Some(f) => Ok(std::mem::transmute(f)),
+        let procedure_address = GetProcAddress(ntdll_handle, b"NtCreateThreadEx\0".as_ptr());
+        match procedure_address {
+            Some(function_pointer) => Ok(std::mem::transmute(function_pointer)),
             None => Err(DoctorError::injection_failed(
-                "NtCreateThreadEx not found in ntdll.dll",
+                "The NtCreateThreadEx procedure could not be found within ntdll.dll",
             )),
         }
     }

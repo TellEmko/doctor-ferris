@@ -23,7 +23,7 @@ impl InjectionMethod for ApcInjectionMethod {
     }
 
     fn description(&self) -> &str {
-        "APC (Asynchronous Procedure Call) queue injection — fires when target threads enter alertable wait"
+        "APC (Asynchronous Procedure Call) queue injection — executes code when target threads enter an alertable wait state"
     }
 
     fn supported_platforms(&self) -> &[Platform] {
@@ -50,70 +50,69 @@ impl InjectionMethod for ApcInjectionMethod {
         use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
         use windows_sys::Win32::System::Threading::*;
 
-        let dll_path_str = config
+        let dll_path_string = config
             .dll_path
             .to_str()
-            .ok_or_else(|| DoctorError::InvalidPath("non-UTF-8 DLL path".into()))?;
+            .ok_or_else(|| DoctorError::InvalidPath("The provided DLL path contains non-UTF-8 characters".into()))?;
 
-        let mut dll_bytes = dll_path_str.as_bytes().to_vec();
-        dll_bytes.push(0);
+        let mut dll_path_bytes = dll_path_string.as_bytes().to_vec();
+        dll_path_bytes.push(0);
 
         log::info!(
-            "[apc_injection] Injecting '{}' into {} (PID {})",
-            dll_path_str,
+            "[apc_injection] Initiating APC injection of '{}' into {} (Process ID: {})",
+            dll_path_string,
             target.name,
             target.pid
         );
 
-        let process = super::super::open_process_for_injection(target.pid)?;
-        let load_library = super::super::resolve_loadlibrary_a()?;
+        let target_process = super::super::open_process_for_injection(target.pid)?;
+        let load_library_procedure = super::super::resolve_load_library_a()?;
 
         unsafe {
-            // Write the DLL path into the target process.
-            let remote_path = super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
+            // Allocate memory and write the DLL path into the target process space.
+            let remote_path_address = super::super::remote_alloc_and_write(target_process.raw(), &dll_path_bytes)?;
 
-            // Enumerate threads and queue an APC to each one.
-            let thread_ids = enumerate_threads(target.pid)?;
+            // Enumerate all active threads and attempt to queue an APC to each.
+            let active_thread_ids = enumerate_active_threads(target.pid)?;
 
-            if thread_ids.is_empty() {
-                super::super::remote_free(process.raw(), remote_path);
+            if active_thread_ids.is_empty() {
+                super::super::remote_free(target_process.raw(), remote_path_address);
                 return Err(DoctorError::injection_failed(
-                    "no threads found in target process",
+                    "No active threads were discovered within the target process",
                 ));
             }
 
-            let mut queued_count = 0u32;
+            let mut successfully_queued_count = 0u32;
 
-            for tid in &thread_ids {
-                let thread = OpenThread(THREAD_SET_CONTEXT, 0, *tid);
-                if let Some(thread_handle) = super::super::SafeHandle::new(thread) {
-                    let result = QueueUserAPC(
-                        Some(std::mem::transmute(load_library)),
+            for thread_id in &active_thread_ids {
+                let thread_handle_raw = OpenThread(THREAD_SET_CONTEXT, 0, *thread_id);
+                if let Some(thread_handle) = super::super::SafeHandle::new(thread_handle_raw) {
+                    let queue_status = QueueUserAPC(
+                        Some(std::mem::transmute(load_library_procedure)),
                         thread_handle.raw(),
-                        remote_path as usize,
+                        remote_path_address as usize,
                     );
-                    if result != 0 {
-                        queued_count += 1;
+                    if queue_status != 0 {
+                        successfully_queued_count += 1;
                     }
                 }
             }
 
-            if queued_count == 0 {
-                super::super::remote_free(process.raw(), remote_path);
+            if successfully_queued_count == 0 {
+                super::super::remote_free(target_process.raw(), remote_path_address);
                 return Err(DoctorError::injection_failed(
-                    "failed to queue APC to any thread",
+                    "Failed to successfully queue an APC to any discovered thread",
                 ));
             }
 
             log::info!(
-                "[apc_injection] Queued APC to {}/{} threads",
-                queued_count,
-                thread_ids.len()
+                "[apc_injection] Successfully queued APCs to {} out of {} threads",
+                successfully_queued_count,
+                active_thread_ids.len()
             );
 
-            // Note: we intentionally do NOT free remote_path here because the
-            // APC has not fired yet. The memory will leak (a few hundred bytes)
-            // but freeing it would cause an access violation when the APC fires.
+            // Note: The remote memory allocated for the DLL path is intentionally not released here.
+            // The memory must remain valid until the queued APC is executed by a thread.
 
             Ok(InjectionResult {
                 method_name: self.name().to_string(),
@@ -121,40 +120,40 @@ impl InjectionMethod for ApcInjectionMethod {
                 dll_path: config.dll_path.clone(),
                 base_address: None,
                 details: format!(
-                    "APC queued to {}/{} threads; injection occurs on next alertable wait",
-                    queued_count,
-                    thread_ids.len()
+                    "Asynchronous Procedure Call (APC) queued to {}/{} threads; execution will occur upon the next alertable wait state",
+                    successfully_queued_count,
+                    active_thread_ids.len()
                 ),
             })
         }
     }
 }
 
-/// Enumerate all thread IDs belonging to a process.
-fn enumerate_threads(pid: u32) -> Result<Vec<u32>> {
+/// Enumerates all thread identifiers associated with the specified process.
+fn enumerate_active_threads(process_id: u32) -> Result<Vec<u32>> {
     use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
 
     unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        let snap =
-            super::super::SafeHandle::new(snapshot).ok_or_else(super::super::last_os_error)?;
+        let snapshot_handle = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        let snapshot =
+            super::super::SafeHandle::new(snapshot_handle).ok_or_else(super::super::last_os_error)?;
 
-        let mut entry: THREADENTRY32 = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut thread_entry: THREADENTRY32 = std::mem::zeroed();
+        thread_entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
 
-        let mut ids = Vec::new();
+        let mut thread_ids = Vec::new();
 
-        if Thread32First(snap.raw(), &mut entry) != 0 {
+        if Thread32First(snapshot.raw(), &mut thread_entry) != 0 {
             loop {
-                if entry.th32OwnerProcessID == pid {
-                    ids.push(entry.th32ThreadID);
+                if thread_entry.th32OwnerProcessID == process_id {
+                    thread_ids.push(thread_entry.th32ThreadID);
                 }
-                if Thread32Next(snap.raw(), &mut entry) == 0 {
+                if Thread32Next(snapshot.raw(), &mut thread_entry) == 0 {
                     break;
                 }
             }
         }
 
-        Ok(ids)
+        Ok(thread_ids)
     }
 }

@@ -87,18 +87,18 @@ pub fn run() -> crate::Result<()> {
             let methods = injector.methods();
 
             println!(
-                "{:<20} {:<10} {:<10} {:<8} {}",
-                "NAME", "STEALTH", "RELIAB.", "COMPAT.", "DESCRIPTION"
+                "{:<20} {:<10} {:<12} {:<14} {}",
+                "IDENTIFIER", "EVASION", "RELIABILITY", "COMPATIBILITY", "DESCRIPTION"
             );
-            println!("{}", "-".repeat(80));
+            println!("{}", "-".repeat(100));
 
             for method in methods {
                 println!(
-                    "{:<20} {:<10} {:<10} {:<8} {}",
+                    "{:<20} {:<10} {:<12} {:<14} {}",
                     method.name(),
-                    if method.is_stealth() { "yes" } else { "no" },
-                    method.reliability(),
-                    method.compatibility(),
+                    if method.is_stealth() { "Enabled" } else { "Disabled" },
+                    format!("{}%", method.reliability()),
+                    format!("{}%", method.compatibility()),
                     method.description(),
                 );
             }
@@ -148,7 +148,7 @@ fn handle_inject(
     } else if let Some(name) = name {
         builder = builder.target_name(name);
     } else {
-        eprintln!("Either --pid or --name must be specified");
+        eprintln!("Operation aborted: A target process must be specified using either the --pid or --name flag.");
         std::process::exit(1);
     }
 
@@ -159,7 +159,7 @@ fn handle_inject(
     let config = match builder.build() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Invalid configuration: {}", e);
+            eprintln!("Configuration Error: {}", e);
             std::process::exit(1);
         }
     };
@@ -167,17 +167,17 @@ fn handle_inject(
     let injector = Injector::new();
     match injector.inject(&config) {
         Ok(result) => {
-            println!("✓ {}", result);
+            println!("Injection successfully completed.");
             if let Some(addr) = result.base_address {
-                println!("  Base address: 0x{:X}", addr);
+                println!("  Base Memory Address: 0x{:X}", addr);
             }
-            println!("  Method: {}", result.method_name);
-            println!("  Details: {}", result.details);
+            println!("  Selected Method:     {}", result.method_name);
+            println!("  Procedure Details:   {}", result.details);
         }
         Err(e) => {
-            eprintln!("✗ Injection failed: {}", e);
+            eprintln!("Procedure Failure: {}", e);
             if e.is_retryable() {
-                eprintln!("  (this error may be retryable)");
+                eprintln!("  Notice: This error may be transient; re-attempting the operation may yield a successful result.");
             }
             std::process::exit(1);
         }

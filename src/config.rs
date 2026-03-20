@@ -1,7 +1,8 @@
 //! Injection configuration and builder API.
 //!
 //! [`InjectionConfig`] is the primary configuration type passed to the injector.
-//! It supports a builder pattern for ergonomic construction.
+//! It supports a builder pattern for ergonomic construction and explicit
+//! validation on `build()`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -30,7 +31,7 @@ impl std::fmt::Display for Target {
 ///
 /// Construct via the builder pattern:
 /// ```rust,no_run
-/// use doctor_ferris::config::{InjectionConfig, InjectionMode};
+/// use doctor_ferris::config::InjectionConfig;
 ///
 /// let config = InjectionConfig::builder()
 ///     .dll_path("payload.dll")
@@ -55,7 +56,7 @@ pub struct InjectionConfig {
     /// Maximum time to wait for the injection to complete.
     pub timeout: Duration,
     /// Whether to skip architecture compatibility validation.
-    /// **Danger:** enabling this can cause crashes in the target process.
+    /// Warning: enabling this may cause target instability.
     pub skip_arch_check: bool,
 }
 
@@ -103,7 +104,7 @@ impl InjectionConfigBuilder {
         self
     }
 
-    /// Enable post-injection stealth operations (like PE header cleanup).
+    /// Enable post-injection stealth operations (e.g., PE header cleanup).
     pub fn stealth(mut self, enable: bool) -> Self {
         self.stealth = enable;
         self
@@ -121,7 +122,7 @@ impl InjectionConfigBuilder {
         self
     }
 
-    /// Skip architecture compatibility checks. **Use with extreme caution.**
+    /// Skip architecture compatibility checks. Use with caution.
     pub fn skip_arch_check(mut self, skip: bool) -> Self {
         self.skip_arch_check = skip;
         self

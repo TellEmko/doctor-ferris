@@ -1,155 +1,147 @@
 //! Injection method trait and pluggable method registry.
 //!
-//! Every injection technique — built-in or user-provided — implements the
-//! [`InjectionMethod`] trait. The [`MethodRegistry`] collects them and provides
-//! selection logic based on platform, architecture, and injection mode.
+//! Every injection technique — whether built-in or user-provided — must implement the
+//! [`InjectionMethod`] trait. The [`MethodRegistry`] serves as a centralized collection
+//! of these methods and provides selection logic based on the target platform,
+//! architecture, and required injection characteristics.
 
 use crate::config::InjectionConfig;
 use crate::error::{DoctorError, Result};
 use crate::types::{Architecture, InjectionResult, Platform, ProcessInfo};
 
-/// Trait implemented by every injection technique.
+/// A trait that defines the interface for all library injection techniques.
 ///
-/// Implementations must be `Send + Sync` to allow the registry and injector
-/// to be shared across threads.
+/// Implementations must be thread-safe (`Send + Sync`) to facilitate their use
+/// across concurrent execution contexts.
 pub trait InjectionMethod: Send + Sync {
-    /// Unique machine-readable name for this method (e.g. `"loadlibrary"`).
+    /// Returns a unique, machine-readable identifier for the injection method (e.g., `"loadlibrary"`).
     fn name(&self) -> &str;
 
-    /// Human-readable description of the technique.
+    /// Returns a formal, human-readable description of the injection technique.
     fn description(&self) -> &str;
 
-    /// Platforms on which this method is available.
+    /// Returns the list of platforms supported by this injection method.
     fn supported_platforms(&self) -> &[Platform];
 
-    /// CPU architectures supported by this method.
+    /// Returns the CPU architectures compatible with this injection method.
     fn supported_architectures(&self) -> &[Architecture];
 
-    /// Whether this method requires elevated / root privileges.
+    /// Indicates whether the method requires administrative or elevated privileges.
     fn requires_elevation(&self) -> bool {
         false
     }
 
-    /// Whether this method is classified as a stealth technique.
+    /// Indicates whether the method is classified as an evasion-oriented technique.
     ///
-    /// Stealth methods avoid easily-detectable primitives such as
-    /// `CreateRemoteThread` and are preferred when [`InjectionMode::Stealth`]
-    /// is selected.
+    /// Evasion-oriented methods typically avoid easily-monitored system primitives
+    /// such as `CreateRemoteThread`.
     fn is_stealth(&self) -> bool {
         false
     }
 
-    /// Reliability score from 0 (experimental) to 100 (battle-tested).
-    ///
-    /// Used by the registry to rank methods for [`InjectionMode::Stability`].
+    /// Returns a reliability score, ranging from 0 (experimental) to 100 (production-ready).
     fn reliability(&self) -> u8 {
         50
     }
 
-    /// Compatibility score from 0 (narrow support) to 100 (universal).
-    ///
-    /// Used by the registry to rank methods for [`InjectionMode::Compatibility`].
+    /// Returns a compatibility score, ranging from 0 (highly specific) to 100 (universal).
     fn compatibility(&self) -> u8 {
         50
     }
 
-    /// Execute the injection.
+    /// Executes the injection procedure.
     ///
-    /// Implementations may assume that architecture and target validation
-    /// have already been performed by the caller.
+    /// Callers are responsible for ensuring that architecture and target validation
+    /// have been successfully performed prior to invocation.
     fn inject(&self, config: &InjectionConfig, target: &ProcessInfo) -> Result<InjectionResult>;
 }
 
-/// Registry of available injection methods.
-///
-/// The registry stores methods and provides lookup, enumeration, and
-/// automatic selection based on the current platform, target architecture,
-/// and injection mode.
+/// A centralized registry for managing and selecting available injection methods.
 pub struct MethodRegistry {
     methods: Vec<Box<dyn InjectionMethod>>,
 }
 
 impl MethodRegistry {
-    /// Create an empty registry.
+    /// Initializes an empty injection method registry.
     pub fn new() -> Self {
         Self {
             methods: Vec::new(),
         }
     }
 
-    /// Create a registry pre-populated with all built-in methods for the
-    /// current platform.
+    /// Initializes a registry pre-populated with default methods for the current platform.
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
         registry.register_platform_defaults();
         registry
     }
 
-    /// Register a custom injection method.
+    /// Registers a new injection method within the registry.
     pub fn register(&mut self, method: Box<dyn InjectionMethod>) {
         log::info!("Registered injection method: {}", method.name());
         self.methods.push(method);
     }
 
-    /// Look up a method by name.
+    /// Retrieves an injection method by its unique identifier name.
     pub fn get(&self, name: &str) -> Option<&dyn InjectionMethod> {
         self.methods
             .iter()
-            .find(|m| m.name().eq_ignore_ascii_case(name))
-            .map(|m| m.as_ref())
+            .find(|method| method.name().eq_ignore_ascii_case(name))
+            .map(|method| method.as_ref())
     }
 
-    /// List all registered method names.
+    /// Returns a list of all registered injection method identifiers.
     pub fn list(&self) -> Vec<&str> {
-        self.methods.iter().map(|m| m.name()).collect()
+        self.methods.iter().map(|method| method.name()).collect()
     }
 
-    /// List all registered methods with full trait access.
+    /// Returns an immutable slice of all registered injection methods.
     pub fn methods(&self) -> &[Box<dyn InjectionMethod>] {
         &self.methods
     }
 
-    /// Automatically select a reliable default method for the given platform and architecture.
+    /// Automatically selects an appropriate default injection method for the specified platform and architecture.
     pub fn get_default(
         &self,
         platform: Platform,
-        arch: Architecture,
+        architecture: Architecture,
     ) -> Result<&dyn InjectionMethod> {
-        let candidates: Vec<&dyn InjectionMethod> = self
+        let potential_candidates: Vec<&dyn InjectionMethod> = self
             .methods
             .iter()
-            .map(|m| m.as_ref())
-            .filter(|m| m.supported_platforms().contains(&platform))
-            .filter(|m| {
-                m.supported_architectures().contains(&arch)
-                    || m.supported_architectures().contains(&Architecture::Unknown)
+            .map(|method| method.as_ref())
+            .filter(|method| method.supported_platforms().contains(&platform))
+            .filter(|method| {
+                method.supported_architectures().contains(&architecture)
+                    || method.supported_architectures().contains(&Architecture::Unknown)
             })
             .collect();
 
-        if candidates.is_empty() {
+        if potential_candidates.is_empty() {
             return Err(DoctorError::MethodNotFound(format!(
-                "no methods available for {} / {}",
-                platform, arch
+                "No compatible injection methods were found for the {} / {} environment",
+                platform, architecture
             )));
         }
 
-        // Return standard built-in defaults if available
-        for method_name in &["loadlibrary", "ptrace", "task_inject"] {
-            if let Some(m) = candidates.iter().find(|c| c.name() == *method_name) {
-                return Ok(*m);
+        // Prioritize standard, high-compatibility methods as defaults.
+        const PREFERRED_DEFAULTS: &[&str] = &["loadlibrary", "ptrace", "task_inject"];
+        for preferred_name in PREFERRED_DEFAULTS {
+            if let Some(selected_method) = potential_candidates.iter().find(|candidate| candidate.name() == *preferred_name) {
+                return Ok(*selected_method);
             }
         }
 
-        // Fallback to highest compatibility
-        let selected = candidates
+        // Fallback to the method with the highest compatibility score.
+        let selected_method = potential_candidates
             .into_iter()
-            .max_by_key(|m| m.compatibility())
+            .max_by_key(|method| method.compatibility())
             .unwrap();
 
-        Ok(selected)
+        Ok(selected_method)
     }
 
-    /// Register all built-in methods for the current compilation target.
+    /// Registers all built-in injection methods relevant to the current compilation target.
     fn register_platform_defaults(&mut self) {
         #[cfg(target_os = "windows")]
         crate::platform::windows::register_methods(self);
@@ -163,14 +155,15 @@ impl MethodRegistry {
 }
 
 impl Default for MethodRegistry {
+    /// Returns a default registry instance populated with platform-specific methods.
     fn default() -> Self {
         Self::with_defaults()
     }
 }
 
 impl std::fmt::Debug for MethodRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MethodRegistry")
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("MethodRegistry")
             .field("methods", &self.list())
             .finish()
     }

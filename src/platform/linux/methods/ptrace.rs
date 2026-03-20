@@ -194,13 +194,13 @@ impl InjectionMethod for PtraceMethod {
         let _ = ptrace::detach(pid, None);
 
         if dlopen_result == 0 {
-            return Err(DoctorError::injection_failed(
-                "dlopen returned NULL — the shared object may have unresolved dependencies",
+            return Err(DoctorError::InjectionFailed(
+                "The remote call to dlopen failed (returned NULL). This typically indicates that the shared library is missing dependencies or has an incompatible format.".into(),
             ));
         }
 
         log::info!(
-            "[ptrace] Injection complete, dlopen handle: 0x{:X}",
+            "[ptrace] Injection procedure successfully completed; dlopen handle: 0x{:X}",
             dlopen_result
         );
 
@@ -210,7 +210,7 @@ impl InjectionMethod for PtraceMethod {
             dll_path: config.dll_path.clone(),
             base_address: Some(dlopen_result as usize),
             details: format!(
-                "ptrace + dlopen injection successful (handle 0x{:X})",
+                "ptrace-based dlopen injection was successful (library handle: 0x{:X})",
                 dlopen_result
             ),
         })
@@ -235,13 +235,13 @@ fn find_remote_symbol(pid: u32, symbol: &str) -> Result<u64> {
     let local_maps = parse_maps(std::process::id())?;
     let remote_maps = parse_maps(pid)?;
 
-    // Determine which library contains the symbol.
+    // Determine which library contains the requested symbol.
     let local_lib = local_maps
         .iter()
         .find(|m| local_addr >= m.start && local_addr < m.end)
         .ok_or_else(|| {
-            DoctorError::injection_failed(format!(
-                "cannot find library containing local symbol '{}'",
+            DoctorError::InjectionFailed(format!(
+                "Unable to locate the library containing the local symbol '{}' in the current process",
                 symbol
             ))
         })?;
@@ -250,8 +250,8 @@ fn find_remote_symbol(pid: u32, symbol: &str) -> Result<u64> {
         .iter()
         .find(|m| m.path == local_lib.path)
         .ok_or_else(|| {
-            DoctorError::injection_failed(format!(
-                "target process does not have '{}' loaded",
+            DoctorError::InjectionFailed(format!(
+                "The target process has not loaded the required library: '{}'",
                 local_lib.path
             ))
         })?;
@@ -264,14 +264,14 @@ fn find_remote_symbol(pid: u32, symbol: &str) -> Result<u64> {
 fn find_local_symbol(name: &str) -> Result<u64> {
     use std::ffi::CString;
 
-    let c_name = CString::new(name).map_err(|e| DoctorError::Other(e.to_string()))?;
+    let c_name = CString::new(name).map_err(|e| DoctorError::Unexpected(format!("Failed to initialize a C-compatible string for symbol '{}': {}", name, e)))?;
 
     unsafe {
         // RTLD_DEFAULT = 0 on Linux.
         let addr = libc::dlsym(std::ptr::null_mut(), c_name.as_ptr());
         if addr.is_null() {
-            return Err(DoctorError::injection_failed(format!(
-                "cannot find local symbol '{}'",
+            return Err(DoctorError::InjectionFailed(format!(
+                "The system was unable to locate the symbol '{}' within the current process context",
                 name
             )));
         }
@@ -288,7 +288,7 @@ struct MapEntry {
 fn parse_maps(pid: u32) -> Result<Vec<MapEntry>> {
     let maps_path = format!("/proc/{}/maps", pid);
     let content = std::fs::read_to_string(&maps_path)
-        .map_err(|e| DoctorError::ProcessNotFound(format!("cannot read {}: {}", maps_path, e)))?;
+        .map_err(|e| DoctorError::ProcessNotFound(format!("Unable to read the process memory map at {}: {}", maps_path, e)))?;
 
     let mut entries = Vec::new();
 

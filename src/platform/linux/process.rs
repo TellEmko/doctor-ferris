@@ -10,7 +10,7 @@ use std::io::Read;
 pub fn enumerate() -> Result<Vec<ProcessInfo>> {
     let mut processes = Vec::new();
 
-    for entry in fs::read_dir("/proc").map_err(|e| DoctorError::Other(e.to_string()))? {
+    for entry in fs::read_dir("/proc").map_err(|e| DoctorError::Unexpected(format!("Failed to read the /proc directory: {}", e)))? {
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
@@ -50,7 +50,7 @@ pub fn detect_architecture(pid: Pid) -> Result<Architecture> {
 
     let mut header = [0u8; 5];
     file.read_exact(&mut header)
-        .map_err(|e| DoctorError::Other(format!("failed to read ELF header: {}", e)))?;
+        .map_err(|e| DoctorError::Unexpected(format!("Failed to read the ELF header from the process executable: {}", e)))?;
 
     if &header[0..4] != b"\x7fELF" {
         return Ok(Architecture::Unknown);

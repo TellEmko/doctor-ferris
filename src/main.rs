@@ -10,8 +10,8 @@ fn main() {
         .format_timestamp(None)
         .init();
 
-    if let Err(e) = doctor_ferris::cli::run() {
-        eprintln!("Error: {}", e);
+    if let Err(error) = doctor_ferris::cli::run() {
+        eprintln!("Application Error: {}", error);
         std::process::exit(1);
     }
 }

@@ -3,24 +3,6 @@
 //! [`Injector`] ties together the configuration, process discovery,
 //! architecture validation, method registry, and platform dispatch into
 //! a single, ergonomic entry point.
-//!
-//! # Example
-//!
-//! ```rust,no_run
-//! use doctor_ferris::{Injector, InjectionConfig, InjectionMode};
-//!
-//! let injector = Injector::new();
-//!
-//! let config = InjectionConfig::builder()
-//!     .dll_path("payload.dll")
-//!     .target_pid(1234)
-//!     .mode(InjectionMode::Stability)
-//!     .build()
-//!     .expect("valid config");
-//!
-//! let result = injector.inject(&config).expect("injection succeeded");
-//! println!("{}", result);
-//! ```
 
 use crate::config::{InjectionConfig, Target};
 use crate::error::{DoctorError, Result};
@@ -52,30 +34,32 @@ impl Injector {
         self.registry.register(method);
     }
 
-    /// Execute an injection according to the given configuration.
+    /// Executes the injection procedure according to the provided configuration.
     ///
-    /// This is the primary method. It handles the full pipeline from target
-    /// resolution through injection.
+    /// This method orchestrates the entire injection lifecycle, including target resolution,
+    /// architecture validation, privilege acquisition, and method execution.
     pub fn inject(&self, config: &InjectionConfig) -> Result<InjectionResult> {
-        log::info!("Starting injection pipeline for {}", config.target);
+        log::info!("Initiating the injection procedure for target: {}", config.target);
 
         let target = self.resolve_target(config)?;
-        log::info!("Resolved target: {}", target);
+        log::info!("Successfully resolved the target process: {}", target);
+
         if !config.skip_arch_check {
             process::validate_injection(&config.dll_path, &target)?;
-            log::info!("Architecture validation passed");
+            log::info!("Target architecture validation completed successfully");
         } else {
-            log::warn!("Architecture check skipped by configuration");
+            log::warn!("Architecture compatibility verification was bypassed by configuration");
         }
+
         if !crate::platform::is_elevated() {
-            log::warn!("Running without elevated privileges — some methods may fail");
+            log::warn!("The current process lacks administrative privileges; some injection methods may be restricted or fail.");
             if config.elevate_privileges {
-                log::info!("Privilege escalation requested");
+                log::info!("Attempting to elevate process privileges as requested");
                 #[cfg(target_os = "windows")]
                 {
                     crate::platform::windows::privilege::enable_debug_privilege().unwrap_or_else(
                         |e| {
-                            log::warn!("Failed to enable debug privilege: {}", e);
+                            log::warn!("The system failed to enable debug privileges: {}", e);
                         },
                     );
                 }
@@ -84,16 +68,16 @@ impl Injector {
 
         let method = self.select_method(config, &target)?;
         log::info!(
-            "Selected method: {} — {}",
+            "Utilizing injection method: {} ({})",
             method.name(),
             method.description()
         );
 
         let result = method.inject(config, &target)?;
-        log::info!("Injection successful: {}", result);
+        log::info!("Injection procedure completed successfully: {}", result);
 
         if config.stealth {
-            log::info!("Applying post-injection cleanup (e.g., zero headers)");
+            log::info!("Executing post-injection stealth routines (e.g., header obfuscation)");
             // Advanced PE/ELF wiping logic can be hooked here.
         }
 
