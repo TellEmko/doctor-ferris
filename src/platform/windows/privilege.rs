@@ -52,12 +52,7 @@ pub fn enable_debug_privilege() -> Result<()> {
         let _guard = super::SafeHandle::new(token);
 
         let mut luid: windows_sys::Win32::Foundation::LUID = std::mem::zeroed();
-        if LookupPrivilegeValueA(
-            std::ptr::null(),
-            b"SeDebugPrivilege\0".as_ptr(),
-            &mut luid,
-        ) == 0
-        {
+        if LookupPrivilegeValueA(std::ptr::null(), b"SeDebugPrivilege\0".as_ptr(), &mut luid) == 0 {
             return Err(super::last_os_error());
         }
 

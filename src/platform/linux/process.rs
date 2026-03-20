@@ -45,14 +45,12 @@ pub fn enumerate() -> Result<Vec<ProcessInfo>> {
 /// `/proc/<pid>/exe`.
 pub fn detect_architecture(pid: Pid) -> Result<Architecture> {
     let exe_path = format!("/proc/{}/exe", pid);
-    let mut file = fs::File::open(&exe_path).map_err(|e| {
-        DoctorError::ProcessNotFound(format!("cannot read {}: {}", exe_path, e))
-    })?;
+    let mut file = fs::File::open(&exe_path)
+        .map_err(|e| DoctorError::ProcessNotFound(format!("cannot read {}: {}", exe_path, e)))?;
 
     let mut header = [0u8; 5];
-    file.read_exact(&mut header).map_err(|e| {
-        DoctorError::Other(format!("failed to read ELF header: {}", e))
-    })?;
+    file.read_exact(&mut header)
+        .map_err(|e| DoctorError::Other(format!("failed to read ELF header: {}", e)))?;
 
     if &header[0..4] != b"\x7fELF" {
         return Ok(Architecture::Unknown);

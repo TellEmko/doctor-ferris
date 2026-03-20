@@ -70,8 +70,7 @@ impl InjectionMethod for ApcInjectionMethod {
 
         unsafe {
             // Write the DLL path into the target process.
-            let remote_path =
-                super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
+            let remote_path = super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
 
             // Enumerate threads and queue an APC to each one.
             let thread_ids = enumerate_threads(target.pid)?;
@@ -137,8 +136,8 @@ fn enumerate_threads(pid: u32) -> Result<Vec<u32>> {
 
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        let snap = super::super::SafeHandle::new(snapshot)
-            .ok_or_else(super::super::last_os_error)?;
+        let snap =
+            super::super::SafeHandle::new(snapshot).ok_or_else(super::super::last_os_error)?;
 
         let mut entry: THREADENTRY32 = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;

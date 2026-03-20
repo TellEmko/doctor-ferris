@@ -67,8 +67,7 @@ impl InjectionMethod for LoadLibraryMethod {
 
         unsafe {
             // Allocate and write the DLL path into the target.
-            let remote_path =
-                super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
+            let remote_path = super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
 
             // Spawn a remote thread at LoadLibraryA with the path as the argument.
             let thread = CreateRemoteThread(

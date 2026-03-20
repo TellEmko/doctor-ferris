@@ -29,14 +29,6 @@ use crate::process;
 use crate::types::{InjectionResult, Platform, ProcessInfo};
 
 /// Primary entry point for the injection framework.
-///
-/// Holds a [`MethodRegistry`] and orchestrates the injection pipeline:
-///
-/// 1. Resolve the target process.
-/// 2. Validate the DLL and architecture compatibility.
-/// 3. Select (or look up) an injection method.
-/// 4. Execute the injection.
-/// 5. Return the result.
 pub struct Injector {
     registry: MethodRegistry,
 }
@@ -67,45 +59,42 @@ impl Injector {
     pub fn inject(&self, config: &InjectionConfig) -> Result<InjectionResult> {
         log::info!("Starting injection pipeline for {}", config.target);
 
-        // Step 1: Resolve the target process.
         let target = self.resolve_target(config)?;
         log::info!("Resolved target: {}", target);
-
-        // Step 2: Validate the DLL and architecture compatibility.
         if !config.skip_arch_check {
             process::validate_injection(&config.dll_path, &target)?;
             log::info!("Architecture validation passed");
         } else {
             log::warn!("Architecture check skipped by configuration");
         }
-
-        // Step 3: Check privileges.
         if !crate::platform::is_elevated() {
             log::warn!("Running without elevated privileges — some methods may fail");
             if config.elevate_privileges {
                 log::info!("Privilege escalation requested");
                 #[cfg(target_os = "windows")]
                 {
-                    crate::platform::windows::privilege::enable_debug_privilege()
-                        .unwrap_or_else(|e| {
+                    crate::platform::windows::privilege::enable_debug_privilege().unwrap_or_else(
+                        |e| {
                             log::warn!("Failed to enable debug privilege: {}", e);
-                        });
+                        },
+                    );
                 }
             }
         }
 
-        // Step 4: Select the injection method.
         let method = self.select_method(config, &target)?;
-        log::info!("Selected method: {} — {}", method.name(), method.description());
+        log::info!(
+            "Selected method: {} — {}",
+            method.name(),
+            method.description()
+        );
 
-        // Step 5: Execute.
         let result = method.inject(config, &target)?;
         log::info!("Injection successful: {}", result);
 
-        // Step 6: Post-injection stealth
         if config.stealth {
-            log::info!("Applying post-injection stealth maneuvers (header cleanup, etc.)");
-            // Placeholder: advanced PE/ELF wiping logic can be hooked here.
+            log::info!("Applying post-injection cleanup (e.g., zero headers)");
+            // Advanced PE/ELF wiping logic can be hooked here.
         }
 
         Ok(result)

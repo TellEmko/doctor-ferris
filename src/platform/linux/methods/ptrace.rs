@@ -62,14 +62,12 @@ impl InjectionMethod for PtraceMethod {
         let pid = Pid::from_raw(target.pid as i32);
 
         // Attach to the target process.
-        ptrace::attach(pid).map_err(|e| {
-            DoctorError::PermissionDenied(format!("ptrace attach failed: {}", e))
-        })?;
+        ptrace::attach(pid)
+            .map_err(|e| DoctorError::PermissionDenied(format!("ptrace attach failed: {}", e)))?;
 
         // Wait for the target to stop.
-        waitpid(pid, None).map_err(|e| {
-            DoctorError::injection_failed(format!("waitpid failed: {}", e))
-        })?;
+        waitpid(pid, None)
+            .map_err(|e| DoctorError::injection_failed(format!("waitpid failed: {}", e)))?;
 
         // Save original registers.
         let original_regs = ptrace::getregs(pid).map_err(|e| {
@@ -104,15 +102,12 @@ impl InjectionMethod for PtraceMethod {
         })?;
 
         unsafe {
-            ptrace::write(
-                pid,
-                trap_addr as *mut _,
-                0xCCCCCCCCCCCCCCCC_u64 as *mut _,
-            )
-            .map_err(|e| {
-                let _ = ptrace::detach(pid, None);
-                DoctorError::injection_failed(format!("ptrace write failed: {}", e))
-            })?;
+            ptrace::write(pid, trap_addr as *mut _, 0xCCCCCCCCCCCCCCCC_u64 as *mut _).map_err(
+                |e| {
+                    let _ = ptrace::detach(pid, None);
+                    DoctorError::injection_failed(format!("ptrace write failed: {}", e))
+                },
+            )?;
         }
 
         ptrace::setregs(pid, regs).map_err(|e| {
@@ -139,9 +134,7 @@ impl InjectionMethod for PtraceMethod {
         if remote_buf == 0 {
             let _ = ptrace::setregs(pid, original_regs);
             let _ = ptrace::detach(pid, None);
-            return Err(DoctorError::injection_failed(
-                "remote malloc returned NULL",
-            ));
+            return Err(DoctorError::injection_failed("remote malloc returned NULL"));
         }
 
         // Write the SO path into the allocated buffer.
@@ -151,11 +144,7 @@ impl InjectionMethod for PtraceMethod {
             word[..chunk.len()].copy_from_slice(chunk);
             let val = u64::from_le_bytes(word);
             unsafe {
-                let _ = ptrace::write(
-                    pid,
-                    (remote_buf + (i * 8) as u64) as *mut _,
-                    val as *mut _,
-                );
+                let _ = ptrace::write(pid, (remote_buf + (i * 8) as u64) as *mut _, val as *mut _);
             }
         }
 
@@ -199,11 +188,7 @@ impl InjectionMethod for PtraceMethod {
 
         // Restore the original trap data and registers.
         unsafe {
-            let _ = ptrace::write(
-                pid,
-                trap_addr as *mut _,
-                original_trap_data as *mut _,
-            );
+            let _ = ptrace::write(pid, trap_addr as *mut _, original_trap_data as *mut _);
         }
         let _ = ptrace::setregs(pid, original_regs);
         let _ = ptrace::detach(pid, None);
@@ -235,8 +220,7 @@ impl InjectionMethod for PtraceMethod {
 /// Find the address of `dlopen` in the target process by parsing
 /// `/proc/<pid>/maps` for the C library and computing the offset.
 fn find_remote_dlopen(pid: u32) -> Result<u64> {
-    find_remote_symbol(pid, "__libc_dlopen_mode")
-        .or_else(|_| find_remote_symbol(pid, "dlopen"))
+    find_remote_symbol(pid, "__libc_dlopen_mode").or_else(|_| find_remote_symbol(pid, "dlopen"))
 }
 
 /// Find a symbol's runtime address in a remote process.
@@ -303,9 +287,8 @@ struct MapEntry {
 
 fn parse_maps(pid: u32) -> Result<Vec<MapEntry>> {
     let maps_path = format!("/proc/{}/maps", pid);
-    let content = std::fs::read_to_string(&maps_path).map_err(|e| {
-        DoctorError::ProcessNotFound(format!("cannot read {}: {}", maps_path, e))
-    })?;
+    let content = std::fs::read_to_string(&maps_path)
+        .map_err(|e| DoctorError::ProcessNotFound(format!("cannot read {}: {}", maps_path, e)))?;
 
     let mut entries = Vec::new();
 

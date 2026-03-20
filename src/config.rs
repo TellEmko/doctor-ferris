@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use crate::error::{DoctorError, Result};
 
-
 /// Target specification — either a PID or a process name.
 #[derive(Debug, Clone)]
 pub enum Target {

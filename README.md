@@ -1,23 +1,22 @@
 <div align="center">
   <img src="github-assets/doctor-ferris.png" alt="Doctor Ferris Logo" />
-  <h1>Doctor Ferris 🦀💉</h1>
-  <p><strong>High-performance, secure, and modular dynamic library injection framework for Rust.</strong></p>
+  <h1>Doctor Ferris</h1>
+  <p><strong>Dynamic library injection framework for Rust.</strong></p>
   <a href="https://github.com/TellEmko/doctor-ferris/actions"><img src="https://img.shields.io/github/actions/workflow/status/TellEmko/doctor-ferris/ci.yml" alt="Build Status"></a>
   <a href="https://crates.io/crates/doctor-ferris"><img src="https://img.shields.io/crates/v/doctor-ferris.svg" alt="Crates.io"></a>
 </div>
 
 ## Overview
 
-Doctor Ferris is a production-grade, multi-platform dynamic library injector library and CLI. It is engineered with a strict focus on performance, safety, modularity, and extensibility. Whether you are building modding platforms, analyzing malware, or instrumenting game clients, Doctor Ferris provides a robust and ergonomic API to get your payload where it belongs.
+Doctor Ferris is a cross-platform library and CLI for dynamic library injection. It provides an API for inserting payloads into running processes on Windows, Linux, and macOS.
 
-### Key Features
+### Features
 
-*   **Cross-Platform Support**: Native backends for **Windows** (primary), **Linux**, and **macOS**.
-*   **Architecture Validation**: Strict checks to prevent injecting x86 payloads into x64 processes (and vice versa), saving you from immediate crashes.
-*   **Pluggable Architecture**: Injectors are implemented via traits (`InjectionMethod`), allowing you to register your own custom "private sauce" injection techniques perfectly integrated into the framework.
-*   **Injection Modes**: Choose between `Stability` (safest methods), `Stealth` (evasive methods), and `Compatibility` to let the registry automatically pick the best tool for the job.
-*   **Advanced Evasion** (Windows): Multiple techniques to bypass user-mode hooks and EDR telemetry, including `NtCreateThreadEx` bypasses, Thread Context Hijacking, APC injection, and full PE Manual Mapping.
-*   **Feature-Gated CLI**: Use the library natively within your Rust application or enable the `cli` feature for a powerful standalone penetration testing tool.
+*   **Cross-Platform**: Windows, Linux, and macOS support.
+*   **Architecture Validation**: Prevents cross-arch injections (e.g., x86 DLL into x64 process).
+*   **Extensible**: Custom methods can be added via the `InjectionMethod` trait.
+*   **Techniques** (Windows): Thread hijacking, APC injection, and manual mapping.
+*   **CLI**: Available as a standalone tool or library.
 
 ## Installation
 
@@ -25,7 +24,7 @@ Add Doctor Ferris to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-doctor-ferris = "0.1"
+doctor-ferris = "0.2"
 ```
 
 To install the standalone CLI:
@@ -46,13 +45,12 @@ fn main() -> doctor_ferris::Result<()> {
     let config = InjectionConfig::builder()
         .dll_path("payload.dll")
         .target_name("target_game.exe")
-        .method("manual_map") // Directly select your injection technique
-        .stealth(true)        // Execute post-injection stealth maneuvers (e.g., zero headers)
-        .elevate(true)        // Automatically request UAC/sudo if needed
+        .method("manual_map") // Selects the injection technique
+        .stealth(true)        // Ex. header cleanup
+        .elevate(true)        // Request UAC/sudo if needed
         .build()?;
 
-    // 3. Execute! The Injector handles architecture validation,
-    //    method selection, and payload delivery.
+    // 3. Execute
     let result = injector.inject(&config)?;
     
     println!("Successfully injected using: {}", result.method_name);
@@ -65,8 +63,8 @@ fn main() -> doctor_ferris::Result<()> {
 ### Windows (x86 / x64)
 *   `loadlibrary`: Classic `CreateRemoteThread` + `LoadLibraryA`. Highly reliable.
 *   `ntcreatethread`: Bypasses shallow API hooks on `CreateRemoteThread`.
-*   `thread_hijack`: Suspends a thread, redirects RIP to load the DLL, and resumes. Evades thread creation monitoring (Stealth).
-*   `apc_injection`: Queues an APC to an alertable thread. (Stealth).
+*   `thread_hijack`: Suspends a thread, redirects RIP to load the DLL, and resumes. Evades thread creation monitoring.
+*   `apc_injection`: Queues an APC to an alertable thread.
 *   `manual_map`: Manually maps the PE sections and resolves base relocations, effectively making the module invisible in the PEB module lists.
 
 ### Linux (x64)
@@ -93,18 +91,18 @@ Options:
   -V, --version  Print version
 ```
 
-Example: Explicit manual map injection with stealth maneuvers enabled.
+Example: Manual map injection:
 ```bash
 doctor-ferris inject -p 1337 -d C:\path\to\payload.dll --method manual_map --stealth --elevate
 ```
 
-## Safety & Security
+## Safety
 
-Dynamic injection is inherently dangerous. Doctor Ferris mitigates this by validating PE/ELF/Mach-O headers against the target process architecture *before* the first byte of memory is modified. 
+Doctor Ferris validates PE/ELF/Mach-O headers against the target process architecture before attempting injection to prevent crashes. 
 
 ## Extensibility
 
-Want to implement your own kernel-mode driver injector or a new exotic exploit? Simply implement the `InjectionMethod` trait and register it to the `Injector` instance!
+You can implement your own injection strategies by implementing the `InjectionMethod` trait and registering it:
 
 ```rust
 struct MyCustomMethod;

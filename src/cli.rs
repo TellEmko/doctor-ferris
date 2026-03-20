@@ -36,7 +36,7 @@ enum Commands {
         #[arg(short, long)]
         method: Option<String>,
 
-        /// Apply post-injection stealth maneuvers (e.g. wiping headers in target).
+        /// Apply post-injection cleanup (e.g. wiping headers in target).
         #[arg(long)]
         stealth: bool,
 
@@ -60,7 +60,6 @@ enum Commands {
     },
 }
 
-/// Entry point for the CLI. Called from `main.rs`.
 pub fn run() -> crate::Result<()> {
     let cli = Cli::parse();
 
@@ -73,47 +72,15 @@ pub fn run() -> crate::Result<()> {
             stealth,
             elevate,
             skip_arch_check,
-        } => {
-            let mut builder = InjectionConfig::builder()
-                .dll_path(&dll)
-                .stealth(stealth)
-                .elevate(elevate)
-                .skip_arch_check(skip_arch_check);
-
-            if let Some(pid) = pid {
-                builder = builder.target_pid(pid);
-            } else if let Some(name) = name {
-                builder = builder.target_name(name);
-            } else {
-                eprintln!("Either --pid or --name must be specified");
-                std::process::exit(1);
-            }
-
-            if let Some(method_name) = method {
-                builder = builder.method(method_name);
-            }
-
-            let config = builder.build()?;
-            let injector = Injector::new();
-
-            match injector.inject(&config) {
-                Ok(result) => {
-                    println!("✓ {}", result);
-                    if let Some(addr) = result.base_address {
-                        println!("  Base address: 0x{:X}", addr);
-                    }
-                    println!("  Method: {}", result.method_name);
-                    println!("  Details: {}", result.details);
-                }
-                Err(e) => {
-                    eprintln!("✗ Injection failed: {}", e);
-                    if e.is_retryable() {
-                        eprintln!("  (this error may be retryable)");
-                    }
-                    std::process::exit(1);
-                }
-            }
-        }
+        } => handle_inject(
+            dll,
+            pid,
+            name,
+            method,
+            stealth,
+            elevate,
+            skip_arch_check,
+        ),
 
         Commands::ListMethods => {
             let injector = Injector::new();
@@ -159,4 +126,60 @@ pub fn run() -> crate::Result<()> {
     }
 
     Ok(())
+}
+
+fn handle_inject(
+    dll: String,
+    pid: Option<u32>,
+    name: Option<String>,
+    method: Option<String>,
+    stealth: bool,
+    elevate: bool,
+    skip_arch_check: bool,
+) {
+    let mut builder = InjectionConfig::builder()
+        .dll_path(&dll)
+        .stealth(stealth)
+        .elevate(elevate)
+        .skip_arch_check(skip_arch_check);
+
+    if let Some(pid) = pid {
+        builder = builder.target_pid(pid);
+    } else if let Some(name) = name {
+        builder = builder.target_name(name);
+    } else {
+        eprintln!("Either --pid or --name must be specified");
+        std::process::exit(1);
+    }
+
+    if let Some(method_name) = method {
+        builder = builder.method(method_name);
+    }
+
+    let config = match builder.build() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Invalid configuration: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let injector = Injector::new();
+    match injector.inject(&config) {
+        Ok(result) => {
+            println!("✓ {}", result);
+            if let Some(addr) = result.base_address {
+                println!("  Base address: 0x{:X}", addr);
+            }
+            println!("  Method: {}", result.method_name);
+            println!("  Details: {}", result.details);
+        }
+        Err(e) => {
+            eprintln!("✗ Injection failed: {}", e);
+            if e.is_retryable() {
+                eprintln!("  (this error may be retryable)");
+            }
+            std::process::exit(1);
+        }
+    }
 }

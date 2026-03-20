@@ -84,8 +84,7 @@ impl InjectionMethod for NtCreateThreadMethod {
         let process = super::super::open_process_for_injection(target.pid)?;
 
         unsafe {
-            let remote_path =
-                super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
+            let remote_path = super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
 
             let mut thread_handle: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
 
@@ -97,10 +96,10 @@ impl InjectionMethod for NtCreateThreadMethod {
                 process.raw(),
                 load_library as *mut std::ffi::c_void,
                 remote_path,
-                0,  // No creation flags — thread starts immediately.
-                0,  // ZeroBits
-                0,  // StackSize (default)
-                0,  // MaximumStackSize (default)
+                0, // No creation flags — thread starts immediately.
+                0, // ZeroBits
+                0, // StackSize (default)
+                0, // MaximumStackSize (default)
                 std::ptr::null_mut(),
             );
 
@@ -146,9 +145,7 @@ fn resolve_nt_create_thread_ex() -> Result<FnNtCreateThreadEx> {
     unsafe {
         let ntdll = GetModuleHandleA(b"ntdll.dll\0".as_ptr());
         if ntdll.is_null() {
-            return Err(DoctorError::injection_failed(
-                "failed to locate ntdll.dll",
-            ));
+            return Err(DoctorError::injection_failed("failed to locate ntdll.dll"));
         }
 
         let addr = GetProcAddress(ntdll, b"NtCreateThreadEx\0".as_ptr());

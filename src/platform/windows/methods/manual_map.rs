@@ -11,8 +11,7 @@
 //! 4. Processes base relocations.
 //! 5. Resolves imports by walking the IAT.
 //! 6. Calls `DllMain(DLL_PROCESS_ATTACH)` via a remote thread.
-//!
-//! **Pros:** DLL is absent from the loaded-module list. Maximum stealth.
+//! **Pros:** DLL is absent from the loaded-module list.
 //! **Cons:** Complex, architecture-dependent, and fragile if the PE uses
 //! advanced loader features (TLS callbacks, delay-load, etc.).
 
@@ -110,8 +109,7 @@ impl InjectionMethod for ManualMapMethod {
                 &loader_data as *const LoaderData as *const u8,
                 std::mem::size_of::<LoaderData>(),
             );
-            let remote_data =
-                super::super::remote_alloc_and_write(process.raw(), data_bytes)?;
+            let remote_data = super::super::remote_alloc_and_write(process.raw(), data_bytes)?;
 
             // Write loader shellcode.
             let remote_shellcode =
@@ -199,12 +197,16 @@ struct SectionInfo {
 impl PeHeaders {
     fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < 64 || data[0] != b'M' || data[1] != b'Z' {
-            return Err(DoctorError::ValidationFailed("invalid PE: missing MZ header".into()));
+            return Err(DoctorError::ValidationFailed(
+                "invalid PE: missing MZ header".into(),
+            ));
         }
 
         let pe_offset = u32::from_le_bytes([data[60], data[61], data[62], data[63]]) as usize;
         if pe_offset + 4 > data.len() || &data[pe_offset..pe_offset + 4] != b"PE\0\0" {
-            return Err(DoctorError::ValidationFailed("invalid PE: missing PE signature".into()));
+            return Err(DoctorError::ValidationFailed(
+                "invalid PE: missing PE signature".into(),
+            ));
         }
 
         let coff_start = pe_offset + 4;
@@ -223,7 +225,9 @@ impl PeHeaders {
         let opt_start = coff_start + 20;
         let opt_magic = u16::from_le_bytes([data[opt_start], data[opt_start + 1]]);
         if opt_magic != 0x020B {
-            return Err(DoctorError::ValidationFailed("expected PE32+ (64-bit) optional header".into()));
+            return Err(DoctorError::ValidationFailed(
+                "expected PE32+ (64-bit) optional header".into(),
+            ));
         }
 
         let entry_point =
@@ -262,21 +266,11 @@ impl PeHeaders {
                 break;
             }
             sections.push(SectionInfo {
-                virtual_address: u32::from_le_bytes(
-                    data[s + 12..s + 16].try_into().unwrap(),
-                ),
-                virtual_size: u32::from_le_bytes(
-                    data[s + 8..s + 12].try_into().unwrap(),
-                ),
-                raw_data_offset: u32::from_le_bytes(
-                    data[s + 20..s + 24].try_into().unwrap(),
-                ),
-                raw_data_size: u32::from_le_bytes(
-                    data[s + 16..s + 20].try_into().unwrap(),
-                ),
-                characteristics: u32::from_le_bytes(
-                    data[s + 36..s + 40].try_into().unwrap(),
-                ),
+                virtual_address: u32::from_le_bytes(data[s + 12..s + 16].try_into().unwrap()),
+                virtual_size: u32::from_le_bytes(data[s + 8..s + 12].try_into().unwrap()),
+                raw_data_offset: u32::from_le_bytes(data[s + 20..s + 24].try_into().unwrap()),
+                raw_data_size: u32::from_le_bytes(data[s + 16..s + 20].try_into().unwrap()),
+                characteristics: u32::from_le_bytes(data[s + 36..s + 40].try_into().unwrap()),
             });
         }
 
@@ -312,98 +306,106 @@ unsafe fn resolve_imports_locally(pe: &PeHeaders, pe_data: &mut [u8]) -> Result<
             break;
         }
 
-        let original_first_thunk =
-            u32::from_le_bytes(pe_data[dir_pos..dir_pos + 4].try_into().unwrap());
-        let name_rva = u32::from_le_bytes(pe_data[dir_pos + 12..dir_pos + 16].try_into().unwrap());
-        let first_thunk =
-            u32::from_le_bytes(pe_data[dir_pos + 16..dir_pos + 20].try_into().unwrap());
-
-        if name_rva == 0 {
+        // Resolve a single import descriptor. Returning `Ok(false)` indicates end of directory.
+        if !resolve_import_descriptor(pe, pe_data, dir_pos)? {
             break;
-        }
-
-        let name_offset = rva_to_file_offset(pe, name_rva)
-            .ok_or_else(|| DoctorError::injection_failed("cannot resolve import name RVA"))?;
-
-        let mut name_end = name_offset;
-        while name_end < pe_data.len() && pe_data[name_end] != 0 {
-            name_end += 1;
-        }
-
-        let mut dll_name_bytes = pe_data[name_offset..name_end].to_vec();
-        dll_name_bytes.push(0);
-
-        let h_module =
-            windows_sys::Win32::System::LibraryLoader::LoadLibraryA(dll_name_bytes.as_ptr());
-        if h_module.is_null() {
-            log::warn!("Failed to load dependency DLL locally (some imports may fail to resolve)");
-        }
-
-        let thunk_rva = if original_first_thunk != 0 {
-            original_first_thunk
-        } else {
-            first_thunk
-        };
-        let mut thunk_offset = rva_to_file_offset(pe, thunk_rva)
-            .ok_or_else(|| DoctorError::injection_failed("cannot resolve INT RVA"))?;
-        let mut iat_offset = rva_to_file_offset(pe, first_thunk)
-            .ok_or_else(|| DoctorError::injection_failed("cannot resolve IAT RVA"))?;
-
-        loop {
-            if thunk_offset + 8 > pe_data.len() || iat_offset + 8 > pe_data.len() {
-                break;
-            }
-
-            let thunk_val =
-                u64::from_le_bytes(pe_data[thunk_offset..thunk_offset + 8].try_into().unwrap());
-            if thunk_val == 0 {
-                break;
-            }
-
-            let mut resolved_addr: u64 = 0;
-
-            if !h_module.is_null() {
-                if (thunk_val & (1 << 63)) != 0 {
-                    // Ordinal
-                    let ordinal = (thunk_val & 0xFFFF) as usize;
-                    resolved_addr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
-                        h_module,
-                        ordinal as *const u8,
-                    )
-                    .map_or(0, |f| f as u64);
-                } else {
-                    // By name
-                    let by_name_rva = (thunk_val & 0x7FFFFFFF_FFFFFFFF) as u32;
-                    if let Some(by_name_offset) = rva_to_file_offset(pe, by_name_rva) {
-                        let func_name_offset = by_name_offset + 2;
-                        let mut func_name_end = func_name_offset;
-                        while func_name_end < pe_data.len() && pe_data[func_name_end] != 0 {
-                            func_name_end += 1;
-                        }
-
-                        let mut func_name_bytes =
-                            pe_data[func_name_offset..func_name_end].to_vec();
-                        func_name_bytes.push(0);
-
-                        resolved_addr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
-                            h_module,
-                            func_name_bytes.as_ptr(),
-                        )
-                        .map_or(0, |f| f as u64);
-                    }
-                }
-            }
-
-            pe_data[iat_offset..iat_offset + 8].copy_from_slice(&resolved_addr.to_le_bytes());
-
-            thunk_offset += 8;
-            iat_offset += 8;
         }
 
         dir_pos += 20;
     }
 
     Ok(())
+}
+
+unsafe fn resolve_import_descriptor(pe: &PeHeaders, pe_data: &mut [u8], dir_pos: usize) -> Result<bool> {
+    let original_first_thunk =
+        u32::from_le_bytes(pe_data[dir_pos..dir_pos + 4].try_into().unwrap());
+    let name_rva = u32::from_le_bytes(pe_data[dir_pos + 12..dir_pos + 16].try_into().unwrap());
+    let first_thunk =
+        u32::from_le_bytes(pe_data[dir_pos + 16..dir_pos + 20].try_into().unwrap());
+
+    if name_rva == 0 {
+        return Ok(false); // Indicates the end of the import directory
+    }
+
+    let name_offset = rva_to_file_offset(pe, name_rva)
+        .ok_or_else(|| DoctorError::injection_failed("cannot resolve import name RVA"))?;
+
+    let mut name_end = name_offset;
+    while name_end < pe_data.len() && pe_data[name_end] != 0 {
+        name_end += 1;
+    }
+
+    let mut dll_name_bytes = pe_data[name_offset..name_end].to_vec();
+    dll_name_bytes.push(0);
+
+    let h_module =
+        windows_sys::Win32::System::LibraryLoader::LoadLibraryA(dll_name_bytes.as_ptr());
+    if h_module.is_null() {
+        log::warn!("Failed to load dependency DLL locally (some imports may fail to resolve)");
+    }
+
+    let thunk_rva = if original_first_thunk != 0 {
+        original_first_thunk
+    } else {
+        first_thunk
+    };
+    let mut thunk_offset = rva_to_file_offset(pe, thunk_rva)
+        .ok_or_else(|| DoctorError::injection_failed("cannot resolve INT RVA"))?;
+    let mut iat_offset = rva_to_file_offset(pe, first_thunk)
+        .ok_or_else(|| DoctorError::injection_failed("cannot resolve IAT RVA"))?;
+
+    loop {
+        if thunk_offset + 8 > pe_data.len() || iat_offset + 8 > pe_data.len() {
+            break;
+        }
+
+        let thunk_val =
+            u64::from_le_bytes(pe_data[thunk_offset..thunk_offset + 8].try_into().unwrap());
+        if thunk_val == 0 {
+            break;
+        }
+
+        let mut resolved_addr: u64 = 0;
+
+        if !h_module.is_null() {
+            if (thunk_val & (1 << 63)) != 0 {
+                // Ordinal
+                let ordinal = (thunk_val & 0xFFFF) as usize;
+                resolved_addr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                    h_module,
+                    ordinal as *const u8,
+                )
+                .map_or(0, |f| f as u64);
+            } else {
+                // By name
+                let by_name_rva = (thunk_val & 0x7FFFFFFF_FFFFFFFF) as u32;
+                if let Some(by_name_offset) = rva_to_file_offset(pe, by_name_rva) {
+                    let func_name_offset = by_name_offset + 2;
+                    let mut func_name_end = func_name_offset;
+                    while func_name_end < pe_data.len() && pe_data[func_name_end] != 0 {
+                        func_name_end += 1;
+                    }
+
+                    let mut func_name_bytes = pe_data[func_name_offset..func_name_end].to_vec();
+                    func_name_bytes.push(0);
+
+                    resolved_addr = windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                        h_module,
+                        func_name_bytes.as_ptr(),
+                    )
+                    .map_or(0, |f| f as u64);
+                }
+            }
+        }
+
+        pe_data[iat_offset..iat_offset + 8].copy_from_slice(&resolved_addr.to_le_bytes());
+
+        thunk_offset += 8;
+        iat_offset += 8;
+    }
+
+    Ok(true)
 }
 
 fn read_pe_file(path: &std::path::Path) -> Result<Vec<u8>> {
@@ -457,7 +459,10 @@ unsafe fn copy_sections(
     pe_data: &[u8],
 ) -> Result<()> {
     // Write PE headers.
-    let header_size = pe.sections.first().map_or(0x1000, |s| s.virtual_address as usize);
+    let header_size = pe
+        .sections
+        .first()
+        .map_or(0x1000, |s| s.virtual_address as usize);
     let header_data = &pe_data[..header_size.min(pe_data.len())];
 
     let mut written = 0usize;
@@ -528,51 +533,63 @@ unsafe fn process_relocations(
             break;
         }
 
-        let entry_count = (block_size as usize - 8) / 2;
-        for i in 0..entry_count {
-            let entry_offset = pos + 8 + i * 2;
-            if entry_offset + 2 > pe_data.len() {
-                break;
-            }
-            let entry = u16::from_le_bytes(
-                pe_data[entry_offset..entry_offset + 2].try_into().unwrap(),
-            );
-            let reloc_type = entry >> 12;
-            let offset = (entry & 0x0FFF) as u32;
-
-            if reloc_type == 0 {
-                continue; // IMAGE_REL_BASED_ABSOLUTE — padding, skip.
-            }
-
-            let patch_rva = block_rva + offset;
-            let patch_addr = (base as u64 + patch_rva as u64) as *mut std::ffi::c_void;
-
-            if reloc_type == 10 {
-                // IMAGE_REL_BASED_DIR64
-                let mut value: u64 = 0;
-                let mut read = 0usize;
-                windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory(
-                    process,
-                    patch_addr,
-                    &mut value as *mut u64 as *mut _,
-                    8,
-                    &mut read,
-                );
-                value = value.wrapping_add(delta);
-                let mut written = 0usize;
-                windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory(
-                    process,
-                    patch_addr,
-                    &value as *const u64 as *const _,
-                    8,
-                    &mut written,
-                );
-            }
-        }
+        process_reloc_block(process, base, pe_data, pos, block_rva, block_size, delta)?;
 
         pos += block_size as usize;
     }
 
+    Ok(())
+}
+
+unsafe fn process_reloc_block(
+    process: windows_sys::Win32::Foundation::HANDLE,
+    base: *mut std::ffi::c_void,
+    pe_data: &[u8],
+    pos: usize,
+    block_rva: u32,
+    block_size: u32,
+    delta: u64,
+) -> Result<()> {
+    let entry_count = (block_size as usize - 8) / 2;
+    for i in 0..entry_count {
+        let entry_offset = pos + 8 + i * 2;
+        if entry_offset + 2 > pe_data.len() {
+            break;
+        }
+        let entry =
+            u16::from_le_bytes(pe_data[entry_offset..entry_offset + 2].try_into().unwrap());
+        let reloc_type = entry >> 12;
+        let offset = (entry & 0x0FFF) as u32;
+
+        if reloc_type == 0 {
+            continue;
+        }
+
+        let patch_rva = block_rva + offset;
+        let patch_addr = (base as u64 + patch_rva as u64) as *mut std::ffi::c_void;
+
+        if reloc_type == 10 {
+            // IMAGE_REL_BASED_DIR64
+            let mut value: u64 = 0;
+            let mut read = 0usize;
+            windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory(
+                process,
+                patch_addr,
+                &mut value as *mut u64 as *mut _,
+                8,
+                &mut read,
+            );
+            value = value.wrapping_add(delta);
+            let mut written = 0usize;
+            windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory(
+                process,
+                patch_addr,
+                &value as *const u64 as *const _,
+                8,
+                &mut written,
+            );
+        }
+    }
     Ok(())
 }
 

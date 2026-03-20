@@ -5,9 +5,7 @@ use crate::types::{Architecture, Pid, ProcessInfo};
 
 /// Enumerate running processes via `sysctl` with `KERN_PROC_ALL`.
 pub fn enumerate() -> Result<Vec<ProcessInfo>> {
-    use libc::{
-        c_int, c_void, kinfo_proc, sysctl, CTL_KERN, KERN_PROC, KERN_PROC_ALL,
-    };
+    use libc::{c_int, c_void, kinfo_proc, sysctl, CTL_KERN, KERN_PROC, KERN_PROC_ALL};
 
     unsafe {
         let mut mib: [c_int; 4] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0];
@@ -85,14 +83,12 @@ pub fn detect_architecture(pid: Pid) -> Result<Architecture> {
     let path = std::str::from_utf8(&path_buf[..path_len as usize])
         .map_err(|_| DoctorError::Other("non-UTF-8 process path".into()))?;
 
-    let mut file = std::fs::File::open(path).map_err(|e| {
-        DoctorError::Other(format!("cannot open '{}': {}", path, e))
-    })?;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| DoctorError::Other(format!("cannot open '{}': {}", path, e)))?;
 
     let mut magic = [0u8; 4];
-    file.read_exact(&mut magic).map_err(|e| {
-        DoctorError::Other(format!("cannot read Mach-O header: {}", e))
-    })?;
+    file.read_exact(&mut magic)
+        .map_err(|e| DoctorError::Other(format!("cannot read Mach-O header: {}", e)))?;
 
     let magic_val = u32::from_le_bytes(magic);
     Ok(match magic_val {

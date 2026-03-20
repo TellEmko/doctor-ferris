@@ -44,9 +44,9 @@ impl InjectionMethod for TaskInjectMethod {
     fn inject(&self, config: &InjectionConfig, target: &ProcessInfo) -> Result<InjectionResult> {
         use mach2::kern_return::KERN_SUCCESS;
         use mach2::port::mach_port_t;
+        use mach2::traps::mach_task_self;
         use mach2::traps::task_for_pid;
         use mach2::vm::*;
-        use mach2::traps::mach_task_self;
 
         let dylib_path = config
             .dll_path
@@ -122,7 +122,9 @@ impl InjectionMethod for TaskInjectMethod {
             let kr = mach_vm_allocate(task, &mut sc_addr, sc_size, 1);
             if kr != KERN_SUCCESS {
                 let _ = mach_vm_deallocate(task, remote_addr, alloc_size);
-                return Err(DoctorError::injection_failed("shellcode allocation failed".into()));
+                return Err(DoctorError::injection_failed(
+                    "shellcode allocation failed".into(),
+                ));
             }
 
             let kr = mach_vm_write(
@@ -134,7 +136,9 @@ impl InjectionMethod for TaskInjectMethod {
             if kr != KERN_SUCCESS {
                 let _ = mach_vm_deallocate(task, sc_addr, sc_size);
                 let _ = mach_vm_deallocate(task, remote_addr, alloc_size);
-                return Err(DoctorError::injection_failed("shellcode write failed".into()));
+                return Err(DoctorError::injection_failed(
+                    "shellcode write failed".into(),
+                ));
             }
 
             // Set shellcode page to executable.
@@ -188,9 +192,7 @@ fn resolve_remote_dlopen(pid: u32) -> Result<u64> {
         let name = CString::new("dlopen").unwrap();
         let addr = libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr());
         if addr.is_null() {
-            return Err(DoctorError::injection_failed(
-                "cannot resolve local dlopen",
-            ));
+            return Err(DoctorError::injection_failed("cannot resolve local dlopen"));
         }
         // On macOS with the shared cache, dlopen is at the same address
         // in all processes (ASLR slide is per-boot, not per-process for

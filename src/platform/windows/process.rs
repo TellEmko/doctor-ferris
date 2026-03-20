@@ -5,13 +5,12 @@ use crate::types::{Architecture, Pid, ProcessInfo};
 
 /// Enumerate all running processes via `CreateToolhelp32Snapshot`.
 pub fn enumerate() -> Result<Vec<ProcessInfo>> {
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
     use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
 
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        let snap = super::SafeHandle::new(snapshot)
-            .ok_or_else(super::last_os_error)?;
+        let snap = super::SafeHandle::new(snapshot).ok_or_else(super::last_os_error)?;
 
         let mut entry: PROCESSENTRY32 = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
@@ -58,17 +57,11 @@ pub fn detect_architecture(pid: Pid) -> Result<Architecture> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         let handle = super::SafeHandle::new(handle).ok_or_else(|| {
-            DoctorError::ProcessNotFound(format!(
-                "cannot open PID {} for architecture query",
-                pid
-            ))
+            DoctorError::ProcessNotFound(format!("cannot open PID {} for architecture query", pid))
         })?;
 
         let mut is_wow64: i32 = 0;
-        let ok = windows_sys::Win32::System::Threading::IsWow64Process(
-            handle.raw(),
-            &mut is_wow64,
-        );
+        let ok = windows_sys::Win32::System::Threading::IsWow64Process(handle.raw(), &mut is_wow64);
 
         if ok == 0 {
             return Err(super::last_os_error());

@@ -38,16 +38,13 @@ impl InjectionMethod for DyldInsertMethod {
     }
 
     fn inject(&self, config: &InjectionConfig, target: &ProcessInfo) -> Result<InjectionResult> {
-        let dylib_path = config
-            .dll_path
-            .canonicalize()
-            .map_err(|e| {
-                DoctorError::InvalidPath(format!("{}: {}", config.dll_path.display(), e))
-            })?;
-
-        let dylib_str = dylib_path.to_str().ok_or_else(|| {
-            DoctorError::InvalidPath("non-UTF-8 dylib path".into())
+        let dylib_path = config.dll_path.canonicalize().map_err(|e| {
+            DoctorError::InvalidPath(format!("{}: {}", config.dll_path.display(), e))
         })?;
+
+        let dylib_str = dylib_path
+            .to_str()
+            .ok_or_else(|| DoctorError::InvalidPath("non-UTF-8 dylib path".into()))?;
 
         log::info!(
             "[dyld_insert] Launching '{}' with DYLD_INSERT_LIBRARIES='{}'",
@@ -60,10 +57,7 @@ impl InjectionMethod for DyldInsertMethod {
             .env("DYLD_FORCE_FLAT_NAMESPACE", "1")
             .spawn()
             .map_err(|e| {
-                DoctorError::injection_failed(format!(
-                    "failed to spawn '{}': {}",
-                    target.name, e
-                ))
+                DoctorError::injection_failed(format!("failed to spawn '{}': {}", target.name, e))
             })?;
 
         let child_pid = child.id();

@@ -38,14 +38,13 @@ impl InjectionMethod for LdPreloadMethod {
     }
 
     fn inject(&self, config: &InjectionConfig, target: &ProcessInfo) -> Result<InjectionResult> {
-        let so_path = config
-            .dll_path
-            .canonicalize()
-            .map_err(|e| DoctorError::InvalidPath(format!("{}: {}", config.dll_path.display(), e)))?;
-
-        let so_str = so_path.to_str().ok_or_else(|| {
-            DoctorError::InvalidPath("non-UTF-8 shared object path".into())
+        let so_path = config.dll_path.canonicalize().map_err(|e| {
+            DoctorError::InvalidPath(format!("{}: {}", config.dll_path.display(), e))
         })?;
+
+        let so_str = so_path
+            .to_str()
+            .ok_or_else(|| DoctorError::InvalidPath("non-UTF-8 shared object path".into()))?;
 
         log::info!(
             "[ld_preload] Launching '{}' with LD_PRELOAD='{}'",
@@ -57,10 +56,7 @@ impl InjectionMethod for LdPreloadMethod {
             .env("LD_PRELOAD", so_str)
             .spawn()
             .map_err(|e| {
-                DoctorError::injection_failed(format!(
-                    "failed to spawn '{}': {}",
-                    target.name, e
-                ))
+                DoctorError::injection_failed(format!("failed to spawn '{}': {}", target.name, e))
             })?;
 
         let child_pid = child.id();

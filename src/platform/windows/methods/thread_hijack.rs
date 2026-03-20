@@ -57,7 +57,10 @@ impl InjectionMethod for ThreadHijackMethod {
         const CONTEXT_INTEGER_FLAG: u32 = CONTEXT_AMD64 | 0x02;
         const CONTEXT_SEGMENTS_FLAG: u32 = CONTEXT_AMD64 | 0x04;
         const CONTEXT_FLOATING_POINT_FLAG: u32 = CONTEXT_AMD64 | 0x08;
-        const CONTEXT_FULL_VALUE: u32 = CONTEXT_CONTROL_FLAG | CONTEXT_INTEGER_FLAG | CONTEXT_SEGMENTS_FLAG | CONTEXT_FLOATING_POINT_FLAG;
+        const CONTEXT_FULL_VALUE: u32 = CONTEXT_CONTROL_FLAG
+            | CONTEXT_INTEGER_FLAG
+            | CONTEXT_SEGMENTS_FLAG
+            | CONTEXT_FLOATING_POINT_FLAG;
 
         let dll_path_str = config
             .dll_path
@@ -79,8 +82,7 @@ impl InjectionMethod for ThreadHijackMethod {
 
         unsafe {
             // Write the DLL path into the target process.
-            let remote_path =
-                super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
+            let remote_path = super::super::remote_alloc_and_write(process.raw(), &dll_bytes)?;
 
             // Find a suitable thread to hijack.
             let thread_id = find_thread(target.pid)?;
@@ -94,10 +96,7 @@ impl InjectionMethod for ThreadHijackMethod {
                 thread_id,
             );
             let thread_handle = super::super::SafeHandle::new(thread).ok_or_else(|| {
-                DoctorError::injection_failed(format!(
-                    "failed to open thread {}",
-                    thread_id
-                ))
+                DoctorError::injection_failed(format!("failed to open thread {}", thread_id))
             })?;
 
             // Suspend the thread.
@@ -108,10 +107,15 @@ impl InjectionMethod for ThreadHijackMethod {
 
             // Build x86_64 shellcode that calls LoadLibraryA(remote_path)
             // then jumps back to the original RIP.
-            let mut ctx: windows_sys::Win32::System::Diagnostics::Debug::CONTEXT = std::mem::zeroed();
+            let mut ctx: windows_sys::Win32::System::Diagnostics::Debug::CONTEXT =
+                std::mem::zeroed();
             ctx.ContextFlags = CONTEXT_FULL_VALUE;
 
-            if windows_sys::Win32::System::Diagnostics::Debug::GetThreadContext(thread_handle.raw(), &mut ctx) == 0 {
+            if windows_sys::Win32::System::Diagnostics::Debug::GetThreadContext(
+                thread_handle.raw(),
+                &mut ctx,
+            ) == 0
+            {
                 ResumeThread(thread_handle.raw());
                 super::super::remote_free(process.raw(), remote_path);
                 return Err(super::super::last_os_error());
@@ -127,15 +131,11 @@ impl InjectionMethod for ThreadHijackMethod {
             //   add rsp, 0x28
             //   mov rax, <original_rip>
             //   jmp rax
-            let shellcode = build_hijack_shellcode_x64(
-                remote_path as u64,
-                load_library as u64,
-                original_rip,
-            );
+            let shellcode =
+                build_hijack_shellcode_x64(remote_path as u64, load_library as u64, original_rip);
 
             // Write shellcode to the target.
-            let shellcode_addr =
-                super::super::remote_alloc_and_write(process.raw(), &shellcode)?;
+            let shellcode_addr = super::super::remote_alloc_and_write(process.raw(), &shellcode)?;
 
             // Make shellcode executable.
             let mut old_protect = 0u32;
@@ -150,7 +150,11 @@ impl InjectionMethod for ThreadHijackMethod {
             // Redirect the thread to our shellcode.
             ctx.Rip = shellcode_addr as u64;
 
-            if windows_sys::Win32::System::Diagnostics::Debug::SetThreadContext(thread_handle.raw(), &ctx) == 0 {
+            if windows_sys::Win32::System::Diagnostics::Debug::SetThreadContext(
+                thread_handle.raw(),
+                &ctx,
+            ) == 0
+            {
                 ResumeThread(thread_handle.raw());
                 super::super::remote_free(process.raw(), remote_path);
                 super::super::remote_free(process.raw(), shellcode_addr);
@@ -168,17 +172,17 @@ impl InjectionMethod for ThreadHijackMethod {
             // so it is safe to free.
             super::super::remote_free(process.raw(), shellcode_addr);
 
-            log::info!("[thread_hijack] Injection complete via thread {}", thread_id);
+            log::info!(
+                "[thread_hijack] Injection complete via thread {}",
+                thread_id
+            );
 
             Ok(InjectionResult {
                 method_name: self.name().to_string(),
                 target: target.clone(),
                 dll_path: config.dll_path.clone(),
                 base_address: None,
-                details: format!(
-                    "Thread hijack injection successful (thread {})",
-                    thread_id
-                ),
+                details: format!("Thread hijack injection successful (thread {})", thread_id),
             })
         }
     }
@@ -190,8 +194,8 @@ fn find_thread(pid: u32) -> Result<u32> {
 
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        let snap = super::super::SafeHandle::new(snapshot)
-            .ok_or_else(super::super::last_os_error)?;
+        let snap =
+            super::super::SafeHandle::new(snapshot).ok_or_else(super::super::last_os_error)?;
 
         let mut entry: THREADENTRY32 = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;

@@ -97,10 +97,7 @@ pub(crate) unsafe fn remote_alloc_and_write(
 }
 
 /// Free previously allocated remote memory.
-pub(crate) unsafe fn remote_free(
-    process: HANDLE,
-    addr: *mut std::ffi::c_void,
-) {
+pub(crate) unsafe fn remote_free(process: HANDLE, addr: *mut std::ffi::c_void) {
     use windows_sys::Win32::System::Memory::*;
     VirtualFreeEx(process, addr, 0, MEM_RELEASE);
 }
@@ -125,9 +122,7 @@ pub(crate) fn resolve_loadlibrary_a() -> crate::error::Result<unsafe extern "sys
 }
 
 /// Open a process with the required access rights for injection.
-pub(crate) fn open_process_for_injection(
-    pid: u32,
-) -> crate::error::Result<SafeHandle> {
+pub(crate) fn open_process_for_injection(pid: u32) -> crate::error::Result<SafeHandle> {
     use windows_sys::Win32::System::Threading::*;
 
     let access = PROCESS_CREATE_THREAD

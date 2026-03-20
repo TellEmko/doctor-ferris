@@ -6,7 +6,7 @@ Thank you for your interest in contributing to **Doctor Ferris**! We welcome bug
 
 1.  **Reporting Bugs:** Open an issue if you encounter crashes, architecture detection failures, or injection failures. Please include OS version, architecture, and injection mode/method used.
 2.  **Suggesting Features:** Have an idea for a new injection technique, evasion strategy, or platform target? Open a feature request!
-3.  **Submitting Code:** We welcome PRs for bug fixes, new injection methods (custom "private sauce"), and optimizations.
+3.  **Submitting Code:** We welcome PRs for bug fixes, new injection methods, and optimizations.
 
 ## Development Workflow
 
