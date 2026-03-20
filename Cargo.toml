@@ -1,6 +1,6 @@
 [package]
 name = "doctor-ferris"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["emko"]
 description = "High-performance, modular dynamic library injection across Windows, Linux, and macOS"
